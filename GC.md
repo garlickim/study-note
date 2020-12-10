@@ -18,4 +18,6 @@
 - jdk9+ 부터 기본 GC
 - 기존 GC는 메모리의 연속된 공간을 나눠서 사용했다면, G1GC는 대략 2048개의 region으로 이루어짐
 - 논리적으로 Young Gen, Old Gen,.. 등으로 나눔
+![heap layout](./img/g1gc-layout.png)  
+출처 [https://docs.oracle.com/en/java/javase/11/gctuning/garbage-first-garbage-collector](https://docs.oracle.com/en/java/javase/11/gctuning/garbage-first-garbage-collector.html#GUID-15921907-B297-43A4-8C48-DC88035BC7CF)
 
