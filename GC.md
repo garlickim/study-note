@@ -69,3 +69,6 @@
   (old 영역에 해당되는 region의 marking 정보가 있어서 가능)
 - old region이 충분히 collect되면 G1은 다음 marking cycle이 끝날때까지 Young GC를 시도함
 
+## Phases of the Marking Cycle
+![marking_cycle](./img/g1gcCycle.png)   
+출처 [https://johngrib.github.io/post-img/java-g1gc/g1gc-cycle.png](https://johngrib.github.io/post-img/java-g1gc/g1gc-cycle.png)
