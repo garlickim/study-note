@@ -21,3 +21,31 @@
 ![heap layout](./img/g1gc-layout.png)  
 출처 [https://docs.oracle.com/en/java/javase/11/gctuning/garbage-first-garbage-collector](https://docs.oracle.com/en/java/javase/11/gctuning/garbage-first-garbage-collector.html#GUID-15921907-B297-43A4-8C48-DC88035BC7CF)
 
+- 그림에서 보여지는 "H"는 Humagous Object로 1 region 크기의 절반보다 큰 데이터로 여러 영역을 차지하고 있는 객체
+
+
+# Allocation (Evacuation) Failure
+- GC 수행 중, 라이브 데이터를 copy 하여 새로운 영역에 할당하려 할 때, 더이상 사용 가능한 영역을 찾을 수 없는 경우 stop-the-world(full GC)가 일어남
+
+# Floating Garbage
+- G1GC는 snapshot-at-the-beginning (SATB) 라 불리는 기술을 사용하여 GC를 수행함  
+  > GC 시작 전, 객체에 대한 snapshop을 뜨고 해당 snapshot을 기반으로 객체를 탐색함
+  > snapshot을 뜨는 당시, 라이브 객체였지만 실제 수행중 가비지가 되었더라도 해당 객체는 GC 대상이 되지 않음
+  > 즉, G1GC는 실시간 GC가 아님
+  
+# Card Tables and Concurrent Phases
+- Card Table 이란?
+  > 바이트 배열로 이루어진 메모리 구조, old gen 에서 young gen을 참조하는 객체의 포인터 정보를 가지고 있음 (dirty card)
+  > young gen의 GC 실행시, card table을 참조하여 GC 대상을 파악함 (dirty card만 검색하면 됨)
+- Concurrent Phases
+  > Concurrent marking
+    - initial mark 에서 살아 있는 객체로 판단한 객체들의 참조를 따라가면서 마킹 (다른 스레드와 동시에 진행)
+    - 이어서 새로 추가되거나 참조가 끊긴 remark 단계까지 진행 (다른 스레드와 동시에 진행)
+  > Concurrent cleanup
+    - unreachable object를 지우고, 비워진 영역을 사용 가능한 영역의 목록에 추가함
+    
+# Starting a Concurrent Collection Cycle
+- Concurrent Collection Cycle(concurrent marking phase)이 시작되는 시점은 JDK8 기준 -XX:InitiatingHeapOccupancyPercent=\<NN\> 해당 옵션에 의해 결정 됨  
+  (default 45%)
+
+  
