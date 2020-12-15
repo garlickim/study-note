@@ -44,8 +44,15 @@
   > Concurrent cleanup
     - unreachable object를 지우고, 비워진 영역을 사용 가능한 영역의 목록에 추가함
     
+    
 # Starting a Concurrent Collection Cycle
 - Concurrent Collection Cycle(concurrent marking phase)이 시작되는 시점은 JDK8 기준 -XX:InitiatingHeapOccupancyPercent=\<NN\> 해당 옵션에 의해 결정 됨  
   (default 45%)
 
+
+# Pause Time Goal
+- MaxGCPauseMillis 옵션을 통해 중지시간 목표를 정할 수 있음 (default 200ms)
+- MaxGCPauseMillis 사용은 G1이 collection의 young gen의 수를 조정할 것임
+  > young gen의 size를 줄여야 잦은 GC 를 돌아 중지 시간을 짧게 가져갈 것임
+- 이때, young gen의 size를 지정하는 옵션을 사용한다면 G1이 목표 중지 시간을 달성하는데 문제가 될 수 있음
   
