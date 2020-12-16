@@ -72,3 +72,18 @@
 ## Phases of the Marking Cycle
 ![marking_cycle](./img/g1gcCycle.png)   
 출처 [https://johngrib.github.io/post-img/java-g1gc/g1gc-cycle.png](https://johngrib.github.io/post-img/java-g1gc/g1gc-cycle.png)
+1. Initial marking phase 
+    - root들을 마킹함. young gc(stw)에 포함된다
+2. Root region scanning phase
+    - initial marking 단계에서 마킹된 survivor region을 스캔하여 old gen을 참조하는 object를 마킹함
+    - 애플리케이션 실행과 동시에(not stw) 일어나며, 다음 stw가 일어나기전에 완료 되어야 함
+3. Concurrent marking phase
+    - 전체 heap을 대상으로 reachable object 를 찾음
+    - 어플리케이션 실행과 동시에 일어나지만, young gc의 stw에 의해 방해받을 수 있음
+4. Remark phase
+    - STW 수집이며 마킹주기를 완료하는 데 도움
+    - SATB 버퍼를 비우고 방문하지 않은 라이브 객체를 추적하며 참조 처리를 수행
+5. Cleanup phase
+    - free region과 mixed gc 후보군을 식별
+    - reset되고 빈 region들을 리턴할 때, 부분적으로 동시에 수행됨
+
