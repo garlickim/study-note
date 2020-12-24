@@ -17,11 +17,13 @@
 # G1GC
 - jdk9+ 부터 기본 GC
 - 기존 GC는 메모리의 연속된 공간을 나눠서 사용했다면, G1GC는 대략 2048개의 region으로 이루어짐
-- 논리적으로 Young Gen, Old Gen,.. 등으로 나눔
+- region은 메모리 할당/확보의 단위
+- 논리적으로 Young Gen(eden, survivor), Old Gen,.. 등으로 나눔
 ![heap layout](./img/g1gc-layout.png)  
 출처 [https://docs.oracle.com/en/java/javase/11/gctuning/garbage-first-garbage-collector](https://docs.oracle.com/en/java/javase/11/gctuning/garbage-first-garbage-collector.html#GUID-15921907-B297-43A4-8C48-DC88035BC7CF)
 
 - 그림에서 보여지는 "H"는 Humagous Object로 1 region 크기의 절반보다 큰 데이터로 여러 영역을 차지하고 있는 객체
+- 일반적으로 데이터는 young gen에 할당 됨. humongous objects만 old gen에 directly로 할당 됨.
 
 
 ## Allocation (Evacuation) Failure
@@ -72,6 +74,12 @@
 ## Phases of the Marking Cycle
 ![marking_cycle](./img/g1gcCycle.png)   
 출처 [https://johngrib.github.io/post-img/java-g1gc/g1gc-cycle.png](https://johngrib.github.io/post-img/java-g1gc/g1gc-cycle.png)
+- 크게보면 2단계로 나뉘어짐 
+  - Young only phase : young gen → old gen으로의 메모리를 채우는 GC
+  - Space Reclamation : young gen의 공간을 확보, 추가로 old gen 영역도 재확보
+  - Young only phase ---- IHOP 임계치 도달시 ---→ Space Reclamation
+
+
 1. Initial marking phase 
     - root들을 마킹함. young gc(stw)에 포함된다
 2. Root region scanning phase
@@ -81,9 +89,19 @@
     - 전체 heap을 대상으로 reachable object 를 찾음
     - 어플리케이션 실행과 동시에 일어나지만, young gc의 stw에 의해 방해받을 수 있음
 4. Remark phase
+    - marking 마무리, global 참조 처리 및 class 언로드를 수행
+    - 완전히 빈 영역을 회수, 내부 데이터 구조를 정리 
     - STW 수집이며 마킹주기를 완료하는 데 도움
     - SATB 버퍼를 비우고 방문하지 않은 라이브 객체를 추적하며 참조 처리를 수행
 5. Cleanup phase
     - free region과 mixed gc 후보군을 식별
     - reset되고 빈 region들을 리턴할 때, 부분적으로 동시에 수행됨
 
+
+## Initiating Heap Occupancy Percent (IHOP)
+- Initial Mark collection가 트리거되는 임계치
+- jdk8 기준 default 45%,  jdk11 기준 old gen size의 percentage로 결정됨
+- marking 시간과 marking 하는 동안 old gen에 할당된 메모리 양을 바탕으로 최적의 IHOP를 자동으로 결정 (Adaptive IHOP)
+- Adaptive IHOP가 활성화 된 경우, 임계값을 예측할 값이 부족하다면 현재 old gen의 percentage로 결정됨
+- -XX:-G1UseAdaptiveIHOP 옵션을 통해 Disable 가능
+  - 이때는 -XX:InitiatingHeapOccupancyPercent 해당 옵션을 통해 임계치를 결정함
