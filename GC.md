@@ -98,6 +98,8 @@
     - reset되고 빈 region들을 리턴할 때, 부분적으로 동시에 수행됨
 
 
+</br></br>
+
 ## Initiating Heap Occupancy Percent (IHOP)
 - Initial Mark collection가 트리거되는 임계치
 - jdk8 기준 default 45%,  jdk11 기준 old gen size의 percentage로 결정됨
@@ -105,3 +107,30 @@
 - Adaptive IHOP가 활성화 된 경우, 임계값을 예측할 값이 부족하다면 현재 old gen의 percentage로 결정됨
 - -XX:-G1UseAdaptiveIHOP 옵션을 통해 Disable 가능
   - 이때는 -XX:InitiatingHeapOccupancyPercent 해당 옵션을 통해 임계치를 결정함
+
+- old gen 점유율이 ( 현재 최대 old gen 사이즈 - XX:G1HeapReservePercent ) 일 때, Adaptive IHOP는 공간 회수 단계의 첫번째 mixed gc를 위해 초기 힙 점유율을 set 함
+
+
+
+</br>
+
+## Marking
+- SATB(Snapshot-At-The-Beginning) 알고리즘 사용
+- 초기 Mark 일시 중지시에 heap의 가상 스냅샷을 찍음
+- 마킹하는 도중에 죽는 객체도 라이브 객체로 보는 특징이 존재
+- Remark 단계에서 적은 지연시간을 제공함
+
+</br>
+
+
+## Behavior in Very Tight Heap Situations
+- 어플리케이션의 많은 메모리 사용으로 더 이상 copy할 region을 찾을 수 없는 경우, allocation failure 발생
+- 이미 이동시킨 객체는 그대로 유지, 이동 시키지 않은 객체는 copy 하지 않는 방향으로 진행
+- 일반적인 young gc 만큼 속도가 빠름
+- GC 마무리 단계에 allocation failure에 대한 조치가 마무리된다는 가정하에 어플리케이션을 무리없이 실행 가능
+  - 만약 위와 같은 가정이 깨진다면, Full GC가 일어남
+
+</br>
+
+## Humongous Objects
+
