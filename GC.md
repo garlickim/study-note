@@ -165,24 +165,27 @@
 - young gen region의 사이즈는 XX:G1NewSizePercent에 의해 결정되는 최소값으로 설정됨
 - pause 목표 시간을 초과한다고 결정할 때까지 old gen region을 추가함
 - 각각의 gc pause시 회수 효율성, 가장 높은 우선 순위, 그리고 final collection set을 얻기 위해 남은 사용 가능한 시간을 순서대로 이전 세대 지역을 추가함
-- 
+- GC당 take할 old gen region의 수는 collect(수집)할 old gen region의 후보 수(collection set candidate regions) / XX:G1MixedGCCountTarget 에 설정된 사이즈로 결정됨
+- 공간 재확보 단계 시작시 점유율이 XX:G1MixedGCLiveThresholdPercent 보다 낮은 모든 old gen region이 collection set candidate region 됨
+- 재확보할 수 있는 공간이 XX:G1HeapWastePercent 설정된 값보다 작으면 공간재확보 단계는 종료됨
 
+</br>
 
+## Ergonomic Defaults for G1 GC
+- G1이 사용하는 기본값에 대한 정보
+- 추가 옵션없이 G1 사용시, 예상되는 동작과 리소스 사용량에 대한 정보를 제공
 
+| Option and Default Value | Description |  
+| ------------------------------ | ---------------- |  
+| -XX:MaxGCPauseMillis=200 | The goal for the maximum pause time. |  
+| -XX:GCPauseTimeInterval=\<ergo\> | The goal for the maximum pause time interval. By default G1 doesn’t set any goal, allowing G1 to perform garbage collections back-to-back in extreme cases. |  
+| -XX:ParallelGCThreads=\<ergo\> | The maximum number of threads used for parallel work during garbage collection pauses. This is derived from the number of available threads of the computer that the VM runs on in the following way: if the number of CPU threads available to the process is fewer than or equal to 8, use that. Otherwise add five eighths of the threads greater than to the final number of threads. </br> </br> At the start of every pause, the maximum number of threads used is further constrained by maximum total heap size: G1 will not use more than one thread per -XX:HeapSizePerGCThread amount of Java heap capacity. | 
+| -XX:ConcGCThreads=\<ergo\> | The maximum number of threads used for concurrent work. By default, this value is -XX:ParallelGCThreads divided by 4. |  
+| -XX:+G1UseAdaptiveIHOP   </br>  -XX:InitiatingHeapOccupancyPercent=45 | Defaults for controlling the initiating heap occupancy indicate that adaptive determination of that value is turned on, and that for the first few collection cycles G1 will use an occupancy of 45% of the old generation as mark start threshold. |  
+| -XX:G1HeapRegionSize=\<ergo\> | The set of the heap region size based on initial and maximum heap size. So that heap contains roughly 2048 heap regions. The size of a heap region can vary from 1 to 32 MB, and must be a power of 2. |  
+| -XX:G1NewSizePercent=5  </br>  -XX:G1MaxNewSizePercent=60 | The size of the young generation in total, which varies between these two values as percentages of the current Java heap in use. |
+| -XX:G1HeapWastePercent=5 | The allowed unreclaimed space in the collection set candidates as a percentage. G1 stops the space-reclamation phase if the free space in the collection set candidates is lower than that. |
+| -XX:G1MixedGCCountTarget=8 | The expected length of the space-reclamation phase in a number of collections. |  
+| -XX:G1MixedGCLiveThresholdPercent=85 | Old generation regions with higher live object occupancy than this percentage aren't collected in this space-reclamation phase. |  
 
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
+*** \<ergo\> 값은 환경에 따라 ergonomic하게 실제값이 결정됨 ***
