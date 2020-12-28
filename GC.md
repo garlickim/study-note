@@ -133,4 +133,56 @@
 </br>
 
 ## Humongous Objects
+- resion의 절반 사이즈 보다 크거나 같은 object들
+- XX:G1HeapRegionSize 옵션을 사용하여 region 사이즈를 지정하지 않으면, Ergonomic Defaults 에 따라 결정됨
+- Humongous Object 는 old gen region에 순서가 있는 연속된 region을 할당 받음
+- 시퀀스의 마지막 region의 남은 공간은 전체 object가 회수될 때까지 할당을 위해 손실됨
+- unreachable 상태가 되고, cleanup 중지 또는 full gc의 marking이 끝날때만 회수가 가능함
+(humongous objects can be reclaimed only at the end of marking during the Cleanup pause, or during Full GC if they became unreachable. )
+- bool, 모든 종류의 정수, 부동 소수점 값과 같은 primitive 타입의 배열에 대하여 특별한 provision(규정)이 존재
+  - (young,old 어떤 gc든)GC 일시중지 시, 많은 object에 의해 참조되지 않는다면 G1은 humongous object를 회수하려고 시도함
+  - XX:G1EagerReclaimHumongousObjects 해당 옵션으로 비활성화가 가능 (default는 활성)
+- humongous object의 할당은 gc 일시중지를 조기에(prematurely) 발생 시킬 수 있음
+- humongous object 할당시, Initiating Heap Occupancy 임계치를 확인함. 현재 점유율이 임계치를 초과하면 initial mark young collection을 즉시 실행할 수 있음
+- Full GC 일지라도 humongous object는 움직이지 않음 --> 공간의 조각화 발생
+  - 이에 따라 느린 full gc가 일어나거나 unexpected out-of-memory 발생할 수 있음
+
+
+</br>
+
+## Young-Only Phase Generation Sizing
+- collection 대상은 오직 young generation region
+- normal young collection의 끝에 youn generation 사이즈를 측정
+  - 실제 pause 시간을 장기간 관찰하여 XX : MaxGCPauseTimeMillis 과 XX : PauseTimeIntervalMillis 에 의해 설정된 pause 목표를 충족함
+  - 수집하는 정보에는 collection 하는 동안 복사해야하는 object의 양과 object들이 어떻게 상호 연결되어있는지에 대한 정보가 포함되어 있음
+- 따로 고려된 값이 없다면, pause 시간을 충족하기 위해 XX:G1NewSizePercent 과 XX:G1MaxNewSizePercent이 결정한 값 사이에서 사이즈를 조정함
+
+
+</br>
+
+## Space-Reclamation Phase Generation Sizing
+- G1은 single gc pause시 old gen에서 재확보되는 공간의 양을 최대화하고자 함
+- young gen region의 사이즈는 XX:G1NewSizePercent에 의해 결정되는 최소값으로 설정됨
+- pause 목표 시간을 초과한다고 결정할 때까지 old gen region을 추가함
+- 각각의 gc pause시 회수 효율성, 가장 높은 우선 순위, 그리고 final collection set을 얻기 위해 남은 사용 가능한 시간을 순서대로 이전 세대 지역을 추가함
+- 
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 
