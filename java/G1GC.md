@@ -18,8 +18,8 @@
 - jdk9+ 부터 기본 GC
 - 기존 GC는 메모리의 연속된 공간을 나눠서 사용했다면, G1GC는 대략 2048개의 region으로 이루어짐
 - region은 메모리 할당/확보의 단위
-- 논리적으로 Young Gen(eden, survivor), Old Gen,.. 등으로 나눔
-![heap layout](./img/g1gc-layout.png)  
+- 논리적으로 Young Gen(eden, survivor), Old Gen,.. 등으로 나눔  
+![heap layout](/img/g1gc-layout.png)  
 출처 [https://docs.oracle.com/en/java/javase/11/gctuning/garbage-first-garbage-collector](https://docs.oracle.com/en/java/javase/11/gctuning/garbage-first-garbage-collector.html#GUID-15921907-B297-43A4-8C48-DC88035BC7CF)
 
 - 그림에서 보여지는 "H"는 Humagous Object로 1 region 크기의 절반보다 큰 데이터로 여러 영역을 차지하고 있는 객체
@@ -72,7 +72,7 @@
 - old region이 충분히 collect되면 G1은 다음 marking cycle이 끝날때까지 Young GC를 시도함
 
 ## Phases of the Marking Cycle
-![marking_cycle](./img/g1gcCycle.png)   
+![marking_cycle](/img/g1gcCycle.png)   
 출처 [https://johngrib.github.io/post-img/java-g1gc/g1gc-cycle.png](https://johngrib.github.io/post-img/java-g1gc/g1gc-cycle.png)
 - 크게보면 2단계로 나뉘어짐 
   - Young only phase : young gen → old gen으로의 메모리를 채우는 GC
