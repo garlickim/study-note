@@ -93,3 +93,23 @@ volaile boolean asleep;
 	- 변수에 값을 저장하는 작업이 해당 변수의 현재 값과 관련이 없거나 해당 변수의 값을 변경하는 스레드가 하나만 존재
 	- 해당 변수가 객체의 불변조건을 이루는 다른 변수와 달리 불변조건에 관련되어 있지 않음
 	- 해당 변수를 사용하는 동안에는 어떤 경우라도 락을 걸어 둘 필요가 없는 경우
+
+</br>
++) 추가    
+
+~~~java
+public class MyClass {
+    private int years;
+    private int months
+    private volatile int days;
+
+
+    public void update(int years, int months, int days){
+        this.years  = years;
+        this.months = months;
+        this.days   = days;
+    }
+}
+~~~
+- volatile 변수가 쓰여질 때(days에 값이 set 될 때), 나머지 변수 years/days도 메인 메모리에 값이 쓰여짐  
+- [volatile 관련하여 읽어보면 좋을 article](http://tutorials.jenkov.com/java-concurrency/volatile.html)  
