@@ -292,4 +292,224 @@ public Map<String, Point> getLocations() {
 - Map 내부에 들어있는 내용이 모두 불변이기 때문에 Map 내부의 데이터가 아닌 구조만 복사되어야 함
 
 ### 4.3.2 독립 상태 변수
+- 위임하고자 하는 내부 변수가 두 개 이상이라 해도 두 개 이상의 변수가 서로 '독립적'이라면 클래스의 스레드 안전성을 위임 할 수 있음
+- 독립적이라는 의미는 변수가 서로 상태 값에 대한 연관성이 없음을 일컫음
+~~~java
+public class VisualComponent{
+	private final List<KeyListener> keyListeners = new CopryOnWriteArrayList<KeyListener>();
+	private final List<MouseListener> mouseListeners = new CopryOnWriteArrayList<MouseListener>();
 
+	public void addKeyListener(KeyListener listener){
+		keyListeners.add(listener);
+	}
+
+	public void addMouseListener(MouseListener listener){
+		mouseListeners.add(listener);
+	}
+
+	public void removeKeyListener(KeyListener listener){
+		keyListeners.romove(listener);
+	}
+
+	public void removeMouseListener(MouseListener listener){
+		mouseListeners.remove(listener);
+	}
+}
+~~~
+- 내부적으로 보면 keyListeners 와 mouseListeners 변수는 독립적임
+- VisualComponent 클래스는 스레드 안전한 두 개의 이벤트 리스너 목록에게 클래스의 스레드 안전성을 위임할 수 있음
+- 스레드에 안전한 List 클래스(CopryOnWriteArrayList)를 사용하고 있으며, 두 변수의 연관성이 없기 때문에 스레드 세이프 함
+
+### 4.3.3 위임할 때의 문제점
+~~~java
+public class NumberRange {
+	// 의존성 조건 : lower <= upper
+	private final AtomicInteger lower = new AtomicInteger(0);
+	private final AtomicInteger upper = new AtomicInteger(0);
+
+	public void setLower(int i) {
+		// 주의 - 안전하지 않은 비교문
+		if( i > upper.get() )
+			throw new IllegalArgumentException("can't set lower to " + i + " > upper");
+		lower.set(i);
+	}
+
+	public void setUpper(int i) {
+		// 주의 - 안전하지 않은 비교문
+		if( i < lower.get() )
+			throw new IllegalArgumentException("can't set upper to " + i + " < lower");
+		upper.set(i);
+	}
+
+	public boolean isInRange(int i) {
+		return (i >= lower.get() && i <= upper.get());
+	}
+}
+~~~
+- NumberRange 클래스는 스레드 안전성을 확보하지 못했으며, lower와 upper 변수의 의존성 조건을 100% 만족시키지 못함
+- setLower(), setUpper() 메소드 둘다 비교문을 사용하지만, 단일 연산으로 처리하도록 동기화를 적용하기 않았기 때문
+- lower와 upper 변수에 락을 사용하는 등의 방법을 통해 동기화하면 쉽게 의존성 조건을 충족시킬 수 있음
+- lower와 upper가 외부로 공개되어 값의 변경이 일어나지 않도록 적절한 캡슐화도 필요
+- 두 개 이상의 변수를 사용하는 복합 연산 메소드를 갖고 있다면 위임 기법으로는 스레드 안전성을 확보할 수 없음
+- 내부적으로 락을 활용하여 단일 연산으로 처리될 수 있도록 동기화가 필요함
+- 클래스가 서로 의존성 없이 독립적이고 스레드 안전한 두 개 이상의 클래스를 조합해 만들어져 있고 두 개 이상의 클래스를 한번에 처리하는 복합 연산 메소드가 없는 상태라면, 스레드 안전성을 내부 변수에게 모두 위임 할 수 있음
+- 위의 예제에서 AtomicInteger를 사용했음에도 불구하고 스레드 세이프하지 않은 이유는 특정 변수가 다른 상태 변수와 아무런 의존성 없는 상황이라면 해당 변수를 volaile로 선언해도 스레드 안전성에는 지장이 없다는 규칙과 비슷함
+
+### 4.3.4 내부 상태 변수를 외부에 공개
+- 특정 변수가 현재 상태와 관련없는 현재 기온이나 가장 마지막으로 로그인했던 사용자의 ID 등의 값을 갖는다면 외부 프로그램이 해당하는 값을 바꾼다해도 클래스 내부의 상태 조건을 그다지 망가뜨리지 않을 가능성이 높아 필요하다면 외부에 변수를 공개하고 나쁘지는 않음
+	- 변수를 외부에 공개하면 추후 하위 클래스 작성과 같은 부분에서 곤란한 경우가 발생할 수 있으므로 좋은 방법은 아님
+- 상태 변수가 스레드 안전하고, 클래스 내부에서 상태 변수의 값에 대한 의존성을 갖고 있지 않으며 상태 변수에 대한 어떤 연산을 수행하더라도 잘못된 상태에 이를 가능성이 없다면 해당 변수는 외부에 공개해도 됨
+
+### 4.3.5 예제: 차량 추적 프로그램의 상태를 외부에 공개
+~~~java
+@ThreadSafe
+public class SafePoint {
+    @GuardBy("this") private int x, y;
+
+    private SafePoint(int[] a) { this(a[0], a[1]); }
+
+    public SafePoint(int x, int y) {  set(x, y); }
+
+    public SafePoint(SafePoint p) {
+        this(p.get());
+    }
+
+    public synchronized int[] get() {
+        return new int[]{x, y};
+    }
+
+    public synchronized void set(int x, int y) {
+        this.x = x;
+        this.y = y;
+    }
+}
+~~~
+- private constructor capture 구문의 예
+- getX(), getY()와 같은 메소드가 존재한다면 x 값을 가져오고 y 값을 가져오기 전에 차량의 위치가 바뀌는 상황이 발생하여 스테일 상황이 발생 가능 함
+~~~java
+@ThreadSafe
+public class PublishingVehicleTracker {
+    private final Map<String, SafePoint> locations;
+    private final Map<String, SafePoint> unmodifiableMap;
+
+    public PublishingVehicleTracker(Map<String, SafePoint> locations) {
+        this.locations = new ConcurrentHashMap<String, SafePoint>(locations);
+        this.unmodifiableMap = Collections.unmodifiableMap(this.locations);
+    }
+
+    public Map<String, SafePoint> getLocations() {
+        return unmodifiableMap;
+    }
+
+    public SafePoint getLocation(String id) {
+        return locations.get(id);
+    }
+
+    public void setLocation(String id, int x, int y) {
+        if (!locations.containsKey(id))
+            throw new IllegalArgumentException("invalid vehicle name: " + id);
+        locations.get(id).set(x, y);
+    }
+}
+~~~
+- PublishingVehicleTracker 클래스는 ConcurrentHashMap 클래스에게 스레드 안전성을 위임하여 전체적으로 스레드 안전성을 확보함
+- 스레드에 안전하고 변경가능한 SafePoint 클래스를 사용함
+- 만약 차량의 위치에 대한 제약 사항을 추가해야 한다면 스레드 안전성을 해칠 수 있음
+- 외부 프로그램이 차량의 위치를 변경하고자 할 때, 변경 값을 반영하지 못하도록 거부하거나 변경 사항을 반영하도록 선택할 수 있어야 한다면 해당 구현 방법으로는 충분치 않음
+
+</br>
+
+## 4.4 스레드 안전하게 구현된 클래스에 기능 추가
+- 단일 연산 하나를 기존 클래스에 추가하고자 한다면 해당하는 단일 연산 메소드를 기조 ㄴ클래스에 직접 추가하는 방법이 가장 안전함
+- 기능을 추가하는 또 다른 방법은 기존 클래스를 상속받는 방법으로, 기존 클래스를 외부에서 상속받아 사용할 수 있도록 설계한 경우만 사용 가능함
+~~~java
+@ThreadSafe
+public class BetterVector<E> extends Vector<E> {
+    public synchronized boolean putIfAbsent(E x) {
+        boolean absent = !contains(x);
+        if (absent)
+            add(x);
+        return absent;
+    }
+}
+~~~
+- 기존 클래스를 상속받아 기능을 추가하는 방법은 기존 클래스에 직접 기능을 추가하는 방법보다 문제가 생길 위험이 훨씬 많음
+	- 동기화를 맞춰야 할 대상이 두 개 이상의 클래스에 걸쳐 분산되기 때문
+	- 상위 클래스가 내부적으로 상태 변수의 스레드 안전성을 보장하는 동기화 기법을 수정한다면, 하위 클래스는 의도치 않게 적절한 락을 필요한 부분에 적용하지 못할 가능성이 높음
+
+
+### 4.4.1 호출하는 측의 동기화
+- Collections.synchronizedList 메소드를 사용해 동기화시킨 ArrayList에는 기존 클래스에 메소드를 추가하거나 하위 클래스에서 추가 기능 구현하는 방법을 적용할 수 없음
+	- 동기화된 ArrayList를 받아간 외부 프로그램은 받아간 List 객체가 synchronizedList 메소드로 동기화되었는지 알 수 없기 때문
+- 도우미 클래스를 따로 구현하여 추가 기능을 구현하는 방법으로 클래스에 원하는 기능을 추가할 수 있음
+~~~java
+@NotThreadSafe
+public class ListHelper<E> {
+    public List<E> list = Collections.synchronizedList(new ArrayList<E>());
+
+    ...
+
+    public synchronized boolean putIfAbsent(E x) {
+        boolean absent = !list.contains(x);
+        if (absent)
+            list.add(x);
+        return absent;
+    }
+}
+~~~
+- 아무런 의미가 없는 락을 대상으로 동기화가 맞춰져 있음
+- List가 자체적으로 동기화를 맞추기 위해 어떤 락을 사용했건 간에 ListHelper 클래스와 관련된 락이 아닌 것은 분명함
+- putIfAbsent() 는 List 클래스의 다른 메소드와 다른 차원에서 동기화가 되고 있기 때문에 List 입장에서 보면 단일 연산이라고 볼 수 없음
+- **결과적으로 putIfAbsent()가 실행되는 도중, 원래 List의 다른 메소드를 얼마든지 호출해서 내용을 변경할 수 있다는 의미**
+- 도우미 클래스를 만들어 올바르게 구현하려면 클라이언트 측 락(client-side lock)이나 외부 락(external lock)을 사용해 List가 사용하는 것과 동일한 락을 사용해야 함
+- Vector 클래스와 Collections.synchronizedList 메소드에 대한 문서를 읽어보면 Vector 클래스 자체나 synchronized의 결과 List를 통해 클라이언트 측 락을 지원
+~~~java
+@ThreadSafe
+public class ListHelper<E> {
+    public List<E> list = Collections.synchronizedList(new ArrayList<E>());
+
+    ...
+
+    public boolean putIfAbsent(E x) {
+    	synchronized (list) {
+	        boolean absent = !list.contains(x);
+	        if (absent)
+	            list.add(x);
+	        return absent;
+	    }
+    }
+}
+~~~
+- 제3의 클래스를 만들어 클라이언트 측 락 방법으로 단일 연산을 구현하는 방법은 특정 클래스 내부에서 사용하는 락을 전혀 관계없는 제3의 클래스에서 갖다 쓰기 때문에 훨씬 위험해보이는 방법임
+- 클라이언트 측 락은 클래스 상속과 함께 봤을 때 여러가지 공통점, 예를 들어 클라이언트나 하위 클래스에서 새로 구현한 내용과 원래 클래스에 구현되어 있던 내용이 밀접하게 연관되어 있다는 등의 공통점이 존재
+- 클라이언트 측 락을 구현할 때도 캡슐화되어 있는 동기화 정책을 무너뜨릴 가능성이 존재함
+
+### 4.4.2 클래스 재구성
+- 기존 클래스에 새로운 단일 연산을 추가하고자 할 때, 좀더 안전하게 사용할 수 있는 방법은 '재구성(composition)'
+~~~java
+@ThreadSafe
+public class ImprovedList<T> implements List<T> {
+    private final List<T> list;
+
+    public ImprovedList(List<T> list) { this.list = list; }
+
+    public synchronized boolean putIfAbsent(T x) {
+        boolean contains = list.contains(x);
+        if (!contains)
+            list.add(x);
+        return !contains;
+    }
+
+    public synchronized void clear() { list.clear(); }
+    // ... List 클래스의 다른 메소드도 clear와 비슷하게 구현
+}
+~~~
+- ImprovedList 클래스는 그 자체를 락으로 사용해 그 안에 포함되어 있는 List와는 다른 수준에서 락을 활용하고 있음
+- ImprovedList 클래스를 락으로 사용해 동기화하기 때문에 내부 List 클래스가 스레드 안전한지 신경쓰지 않음
+- 이와 같은 동기화 기법을 한 단계 더 사용한다면 전체적인 성능 측면에서는 약간 부정적인 영향이 존재 할 수 있지만, 이전 사용한 클라이언트 측 락 등의 방법보다 훨씬 안전함
+- List 클래스가 외부로 공개되지 않는 한 스레드 안전성을 확보할 수 있음
+
+</br>
+
+## 4.5 동기화 정책 문서화하기
+- 
