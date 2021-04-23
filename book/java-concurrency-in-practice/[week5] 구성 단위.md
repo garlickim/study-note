@@ -41,8 +41,9 @@ public static void deleteLast(Vector list) {
 	list.remove(lastIndex);
 }
 ~~~
-- 위의 두 가지 메소드를 호출해 사용하는 외부 프로그램의 입장에서 보면 A스레드와 B스레드가 동시에 getLast(), deleteLast()를 각각 호출할 때 ArrayIndexOutOfBoundsException이 발생할 수 있음
-// 그림삽입
+- 위의 두 가지 메소드를 호출해 사용하는 외부 프로그램의 입장에서 보면 A스레드와 B스레드가 동시에 getLast(), deleteLast()를 각각 호출할 때 ArrayIndexOutOfBoundsException이 발생할 수 있음    
+![ArrayIndexOutOfBoundsException](/img/ArrayIndexOutOfBoundsException.png)    
+
 - 이런 문제가 발생하지만, Vector에 입장에서는 스레드 안전성에 문제가 없는 상태
 	- 단순히 없는 항목을 요청했기에 예외가 발생하는 것
 
@@ -392,5 +393,380 @@ public class Indexer implements Runnable {
 </br>
 
 ## 5.4 블로킹 메소드, 인터럽터블 메소드
-- 
+- 스레드가 블록되면 동작이 멈춰진 다음 블록된 상태(BLOCKED, WAITING, TIMED_WAITING) 가운데 하나를 갖게 됨
+- 블로킹 연산은 멈춘 상태에서 특정한 신호를 받아야 계속해서 실행할 수 있는 연산을 말함
+	- 외부 신호가 확인되면 스레드의 상태가 다시 RUNNABLE 상태로 넘어가고 다시 시스템 스케줄러를 통해 CPU를 사용할 수 있게 됨
+- BlockingQueue 인터페이스의 put(), take()는 Thread.sleep()과 같이 InterruptedException을 발생시킬 수 있음
+	- 특정 메소드가 InterruptedException을 발생시킬 수 있다는 것은 해당 메소드가 블로킹 메소드라는 의미 
+	- 메소드에 인터럽트가 걸리면 해당 메소드는 대시중인 상태에서 풀려나고자 노력함
+- 인터럽트는 스레드가 서로 협력해서 실행하기 위한 방법
+- 일반적으로 인터럽트는 특정 작업을 중간에 멈추게 하려는 경우에 사용함
+- 인터럽트를 원활하게 처리하도록 만들어진 메소드는 실행 시간이 너무 길어질 때 일정 시간이 지난 이후 실행을 중단할 수 있도록 구성하기 좋음
+- 사용하는 메소드가 블로킹 메소드라면 InterruptedException이 발생했을 때 대처할 수 있는 방법을 마련해둬야 함
+	- InterruptedException 전달 
+		- 받아낸 InterruptedException을 그대로 호출한 메소드에 넘겨버리는 방법
+		- 인터럽트에 대한 처리가 복잡하거나 귀찮을 때 쉽게 책임을 떠넘길 수 있음
+	- 인터럽트를 무시하고 복구
+		- 특정 상황에서는 InterruptedException을 throw할 수 없는 경우가 존재 (Runnable을 구현한 경우)
+		- InterruptedException을 catch한 다음, 현재 스레드의 interrupt 메소드를 호출해 살위 호출 메소드가 인터럽트 상황이 발생했음을 알 수 있도록 함
+		~~~java
+		public class TaskRunnable implements Runnable {
+		  BlockingQueue<Task> queue;
+		  ...
+		  public void run() {
+		    try {
+		      processTask(queue.take());
+		    }catch (InterruptedException e){
+		      //인터럽트가 발생한 사실을 저장한다.
+		      Thread.currentThread().interrupt();
+		    }
+		  }
+		}
+		~~~
+- InterruptedException을 catch 후 아무런 대응도 하지 않는 행동은 하지 말아야 함
+	- Thread 클래스를 직접 상속하는 경우는 제외한 경우는 제외
+		- 인터럽트에 필요한 대응 조치를 취했다고 간주하기 때문
 
+
+</br>
+
+## 5.5 동기화 클래스
+- 객체를 담을 수 있는 컬렉션 클래스이며, 프로듀서와 컨슈머 사이에서 take(), put() 등의 블로킹 메소드를 사용하여 작업 흐름을 조절 할 수 있음
+- 상태 정보를 사용하여 스레드 간의 작업 흐름을 조절할 수 있는 모든 클래스를 동기화 클래스(synchronizer)라고 함
+- 동기화 클래스의 예 : 세마포어(semaphore), 배리어(barrier), 래치(latch)
+- 동기화 클래스에 접근하려는 스레드가 어느 경우에 통과하고 대기하도록 멈추게 해야하는지 결정하는 상태 정보를 갖고 있으며, 그 상태를 변경할 수 있는 메소드를 제공하고, 동기화 클래스가 특정 상태에 진입할 때까지 효과적으로 대기할 수 있는 메소드도 제공함
+
+### 5.5.1 래치
+- 스스로가 터미널(terminal) 상태에 이를 때까지의 스레드가 동작하는 과정을 늦출 수 있도록 해주는 동기화 클래스
+- 래치가 터미널 상태에 이르기 전에는 관문이 닫혀 있다고 볼 수 있으며, 어떤 스레드도 통과할 수 없음
+- 래치가 터미널 상태에 다다르면 관문이 열리고 모든 스레드가 통과함
+- 터미널 상태에 다다르면 다시 이전으로 되돌릴 수 없으며, 한번 열린 관문은 계속해서 열린 상태로 유지됨
+- 특정한 단일 동작이 완료되기 이전에는 어떤 기능도 동작하지 않도록 막아내야 하는 경우에 적절함
+- CountDownLatch는 하나 또는 둘 이상의 스레드가 여러 개의 이벤트가 일어날 때까지 대기할 수 있도록 되어있음
+~~~java
+public class TestHarness {
+    public long timeTasks(int nThreads, final Runnable task)
+            throws InterruptedException {
+        final CountDownLatch startGate = new CountDownLatch(1);
+        final CountDownLatch endGate = new CountDownLatch(nThreads);
+
+        for (int i = 0; i < nThreads; i++) {
+            Thread t = new Thread() {
+                public void run() {
+                    try {
+                        startGate.await();
+                        try {
+                            task.run();
+                        } finally {
+                            endGate.countDown();
+                        }
+                    } catch (InterruptedException ignored) {
+                    }
+                }
+            };
+            t.start();
+        }
+
+        long start = System.nanoTime();
+        startGate.countDown();
+        endGate.await();
+        long end = System.nanoTime();
+        return end - start;
+    }
+}
+~~~
+- 하나는 시작하는 관문, 하나는 종료하는 관문
+- 작업 스레드가 시작되면 가장 먼저 하는일은 시작하는 관문이 열리기를 기다리는 일
+	- 특정 이벤트가 발생한 이후에 각 작업 스레드가 동작하도록 제어할 수 있음
+- 작업 스레드가 작업을 마치고 가장 마지막에 하는 일은 종료하는 관문의 카운트를 감소 시키는 일
+- 모든 작업 스레드가 끝나는 시점이 오면, 메인 스레드는 모든 작업 스레드가 작업을 마쳤다는 것을 알 수 있으며, 작업에 걸린 시간을 쉽게 확인할 수 있음
+- n개의 스레드가 동시에 동작할 때 전체 작업 시간이 얼마나 걸리는지 확인하고 싶었기 때문에 스레드 생성과 동시에 작업을 실행하지 않음
+
+### 5.5.2 FutureTask
+- FutureTask는 Future를 구현한 인터페이스이며, Future는 결과를 알려주는 연산 작업을 나타냄
+- FutureTask가 나타내는 연산 작업은 Callable 인터페이스를 구현하도록 되어 있음
+	- 시작 전 대기, 시작됨, 종료됨 3가지 상태를 가짐
+- FutureTask의 get()은 작업이 종료됐다면 결과를 즉시 알려줌
+	- 종료 상태에 이르지 못했다면 작업이 종료 상태에 이를 때까지 대기하고, 종료된 이후 연산 결과나 예외를 알려줌
+- FutureTask는 실제로 연산을 실행했던 스레드에서 만들어 낸 결과 객체를 실행시킨 스레드에게 넘겨줌
+	- 결과 객체는 안전한 공개 방법을 통해 넘겨줌
+- Executor 프레임웍에서 비동기적인 작업을 실행하고자할 때 사용하며, 시간이 많이 필요한 작업이 있을 때 실제 결과가 필요한 시점 이전에 미리 작업을 실행시켜두는 용도로 사용함
+~~~java
+public class Preloader {
+    private final FutureTask<ProductInfo> future =
+            new FutureTask<ProductInfo>(new Callable<ProductInfo>() {
+                public ProductInfo call() throws DataLoadException {
+                    return loadProductInfo();
+                }
+            });
+    private final Thread thread = new Thread(future);
+
+    public void start() {
+        thread.start();
+    }
+
+    public ProductInfo get()
+            throws DataLoadException, InterruptedException {
+        try {
+            return future.get();
+        } catch (ExecutionException e) {
+            Throwable cause = e.getCause();
+            if (cause instanceof DataLoadException)
+                throw (DataLoadException) cause;
+            else
+                throw launderThrowable(cause);
+        }
+    }
+}
+~~~
+- Preloader 클래스는 FutureTask를 사용하여 결과 값이 필요한 시점 이전에 시간이 많이 걸리는 작업을 미리 실행시켜둠
+- Preloader를 호출한 프로그램에서 실제 제품 정보가 필요한 시점이 되면 Preloader.get 메소드를 호출하면 되고, get 호출시 제품 정보를 모두 가져온 상태라면 즉시 ProductInfo를 제공하고, 데이터를 가져오는 중이라면 작업을 완료할 때까지 대기 후 결과를 제공함
+- Calllable 내부에서 예외 발생시 Future.get 에서 ExecutionException으로 한 번 감싼 다음 다시 throw함
+- Future.get 에서 ExecutionException 발생시, 원인은 3가지중 하나
+	- Callable이 던지는 예외, RuntimeException, Error
+	- 원래는 3가지 경우를 분리해 처리해야 하지만, 편의상 아래 예제와 같이 처리
+	~~~java
+	/**
+    * 변수 t의 내용이 Error라면 그대로 throw한다. 
+    * 변수 t의 내용이 RuntimeException이라면 그대로 리턴한다.
+    * 다른 모든 경우에는 IllegalStateException을 throw한다.
+    */
+    public static RuntimeException launderThrowable(Throwable t) {
+        if (t instanceof RuntimeException)
+            return (RuntimeException) t;
+        else if (t instanceof Error)
+            return (Error) t;
+        else 
+            throw new IllegalStateException("RuntimeException이 아님", t);
+    }
+	~~~
+
+### 5.5.3 세마포어
+- 카운팅 세마포어(counting semaphore)는 특정 자원이나 특정 연산을 동시에 사용하거나 호출할 수 있는 스레드의 수를 제한하고자 할 때 사용
+- 자원 풀(pool)이나 컬렉션의 크기에 제한을 두고자 할 때 유용함
+- 가상의 퍼밋(permit)을 만들어 내부 상태를 관리하며, 세마포어를 생성할 때 생성자에 최초로 생성할 퍼밋 수를 넘김
+- 외부 스레드는 퍼밋을 요청해 확보하거나, 이전에 확보한 퍼밋을 반납할 수 있음
+- 현재 사용할 수 있는 퍼밋이 없는 경우, acquire 메소드는 남는 퍼밋이 생시거나, 인터럽트가 걸리거나, 타임아웃이 걸리기 전까지 대기함
+- 자원 풀을 만들 때, 모든 자원을 빌려주고 남아 있는 자원이 없을 때 요청이 들어오는 경우 단순하게 오류를 발생시키고 끝나버리는 정도의 풀은 쉽게 구현이 가능함 (그러나 일반적인 자원 풀을 구현하기 위해 카운팅 세마포어를 사용할 수 있음)
+	- 카운팅 세마포어를 이용하여 최초 퍼밋 개수로 원하는 풀의 개수를 지정
+	- 풀에서 자원을 할당받아 가려고 할 때에는 먼저 acquire를 호출해 퍼밋을 확보하도록 하고, 다 사용한 자원을 반납하고 난 다음에는 항상 release를 호출해 퍼밋도 반납하도록 함
+	- 풀에 자원이 남아있지 않은 경우에 acquire 메소드가 대기 상태에 들어가기 때문에 객체가 반납될 때까지 자연스럽게 대기하게 됨
+~~~java
+public class BoundedHashSet <T> {
+    private final Set<T> set;
+    private final Semaphore sem;
+
+    public BoundedHashSet(int bound) {
+        this.set = Collections.synchronizedSet(new HashSet<T>());
+        sem = new Semaphore(bound);
+    }
+
+    public boolean add(T o) throws InterruptedException {
+        sem.acquire();
+        
+        boolean wasAdded = false;
+        try {
+            wasAdded = set.add(o);
+            return wasAdded;
+        } finally {
+            if (!wasAdded)
+                sem.release();
+        }
+    }
+
+    public boolean remove(Object o) {
+        boolean wasRemoved = set.remove(o);
+        if (wasRemoved)
+            sem.release();
+        return wasRemoved;
+    }
+}
+~~~
+- 세마포어를 사용하면 어떤 클래스라도 크기가 제한된 컬렉션 클래스로 활용할 수 있음
+- 해당하는 컬렉션 클래스가 가질 수 있는 최대 크기의 해당하는 숫자로 초기화
+- 크기와 관련된 내용은 모두 BoundedHashSet에서 세마포어를 사용해 관리함
+
+### 5.5.4 배리어
+- 배리어(barrier)는 특정 이벤트가 발생할 때까지 여러 개의 스레드를 대기 상태로 잡아둘 수 있다는 측면에서 래치와 비슷함
+- 래치와의 차이점은 모든 스레드가 배리어 위치에 동시에 이르러야 관문이 열리고 계속해서 실행 할 수 있다는 점
+- 배치는 "이벤트"를 기다리기 위한 동기화 클래스이고, 배리어는 "다른 스레드"를 기다리기 위한 동기화 클래스
+- "모두들 오후 6시 출판사 앞에서 만나자. 약속 장소에 도착하면 모두 도착할 때까지 대기하고, 모두 도착하면 모두가 모인 후 어디로 이동할지 생각해보자"
+- CyclicBarrier 클래스를 사용하면 여러 스레드가 특정한 배리어 포인트에서 반복적으로 서로 만나는 기능을 모델링 할 수 있고, 커다란 문제 하나를 여러개의 작은 문제로 분리하여 반복하는 병렬 처리 알고리즘을 구현하고자 할 때 적용하기 좋음
+- 스레드 각자가 배리어 포인트에 다다르면 await 메소드를 호출하며, await 메소드는 모든 스레드가 배리어 포인트에 도달할 때까지 대기함
+- await를 호출하고 시간이 너무 오래 지나 타임아웃이 발생하거나 await 메소드에서 대기하던 스레드에 인터럽트가 걸리면 배리어는 깨짐
+	- BrokenBarrierException 발생
+- 배리어가 성공적으로 동과하면 await 메소드는 각 스레드별로 배리어 포인트에 도착한 순서를 알려줌 
+- 배리어 작업은 Runnable 인터페이스를 구현한 클래스이며, 배리어가 성공적으로 통과된 이후 대기하던 스레드를 놓아주기 직전에 실행됨
+- 배리어는 대부분 실제 작업은 모두 여러 스레드에서 병렬로 처리하고, 다음 단계로 넘어가기전 이번 단계에서 계산해야할 내용을 모두 취합하는 등의 작업이 많이 일어나는 시뮬레이션 알고리즘에서 유용하게 사용할 수 있음
+~~~java
+public class CellularAutomata {
+    private final Board mainBoard;
+    private final CyclicBarrier barrier;
+    private final Worker[] workers;
+
+    public CellularAutomata(Board board) {
+        this.mainBoard = board;
+        int count = Runtime.getRuntime().availableProcessors();
+        this.barrier = new CyclicBarrier(count,
+                new Runnable() {
+                    public void run() {
+                        mainBoard.commitNewValues();
+                    }});
+        this.workers = new Worker[count];
+        for (int i = 0; i < count; i++)
+            workers[i] = new Worker(mainBoard.getSubBoard(count, i));
+    }
+
+    private class Worker implements Runnable {
+        private final Board board;
+
+        public Worker(Board board) { this.board = board; }
+        public void run() {
+            while (!board.hasConverged()) {
+                for (int x = 0; x < board.getMaxX(); x++)
+                    for (int y = 0; y < board.getMaxY(); y++)
+                        board.setNewValue(x, y, computeValue(x, y));
+                try {
+                    barrier.await();
+                } catch (InterruptedException ex) {
+                    return;
+                } catch (BrokenBarrierException ex) {
+                    return;
+                }
+            }
+        }
+    }
+
+    public void start() {
+        for (int i = 0; i < workers.length; i++)
+            new Thread(workers[i]).start();
+        mainBoard.waitForConvergence();
+    }
+}
+~~~
+- 시뮬레이션 과정을 병렬화할 때, 일반적으로는 항목별로 연산할 내용을 스레드 단위로 모두 분리시키는 일은 그다지 효율적이지 않음
+	- 셀의 개수가 많은 경우가 대부분이므로 스레드 역시 굉장히 많이 만들어질 수 있기 때문
+	- 많은 스레드를 관리하는건 전체적인 속도가 크게 떨어질 수 있음
+
+</br>
+
+- Exchanger 클래스는 두 개의 스레드가 연결되는 배리어이며, 배리어 포인트에 도달하면 양쪽의 스레드가 서로 갖고 있던 값을 교환함
+- Exchanger는 양쪽 스레드가 서로 대칭되는 작업을 수행할 때 유용함
+	- 한쪽 스레드는 데이터 버퍼에 값을 채워 넣고, 다른 스레드는 버퍼에 있는 값을 빼내어 사용하는 일은 하는 경우에 두 개의 스레드를 Exchanger로 묶고 배리어 포인트에 도달할 때마다 데이터 버퍼를 교환함
+
+</br>
+
+## 5.6 효율적이고 확장성 있는 결과 캐시 구현
+- 캐시를 대출 만들면 단일 스레드로 처리할 때 성능이 높아질 수는 있겠지만, 나중에 성능의 병목 현상을 확장성의 병목으로 바꾸는 결과를 초래할 수 있음
+~~~java
+interface Computable <A, V> {
+    V compute(A arg) throws InterruptedException;
+}
+
+class ExpensiveFunction implements Computable<String, BigInteger> {
+    public BigInteger compute(String arg) {
+        // 잠시 생각 좀 하고...
+        return new BigInteger(arg);
+    }
+}
+
+public class Memoizer1 <A, V> implements Computable<A, V> {
+    @GuardedBy("this") 
+    private final Map<A, V> cache = new HashMap<A, V>();
+    private final Computable<A, V> c;
+
+    public Memoizer1(Computable<A, V> c) {
+        this.c = c;
+    }
+
+    public synchronized V compute(A arg) throws InterruptedException {
+        V result = cache.get(arg);
+        if (result == null) {
+            result = c.compute(arg);
+            cache.put(arg, result);
+        }
+        return result;
+    }
+}
+~~~
+- HashMap과 동기화 기능을 사용해 구현한 캐시
+- Computable를 구현한 ExpensiveFunction 클래스는 결과를 뽑아 내는데 상당한 시간이 소요됨
+- 이전 결과를 기억하는 캐시(메모이제이션_memoization) 기능을 추가한 Memoizer1
+- HashMap은 스레드 안전하지 않아 compute 메소드에 synchronized 처리를 함
+	- 스레드 안전성은 확보하였으나 확장성 측면에서 문제가 생김
+	- 특정 시점에 여러 스레드 가운데 하나만 compute 메소드를 실행 할 수 있기 때문. 
+	![memoizer1](/img/memoizer1.png)  
+
+</br>  
+
+~~java
+public class Memoizer2 <A, V> implements Computable<A, V> {
+    private final Map<A, V> cache = new ConcurrentHashMap<A, V>();
+    private final Computable<A, V> c;
+
+    public Memoizer2(Computable<A, V> c) {
+        this.c = c;
+    }
+
+    public V compute(A arg) throws InterruptedException {
+        V result = cache.get(arg);
+        if (result == null) {
+            result = c.compute(arg);
+            cache.put(arg, result);
+        }
+        return result;
+    }
+}
+~~~
+- ConcurrentHashMap은 스레드 안전성을 확보하고 있기 때문에 별다른 동기화 방법을 사용하지 않아도 됨
+- Memoizer1 에서 발생한 성능상 문제는 사라졌음
+- 2개 이상의 스레드가 동시에 같은 값을 넘기면서 compute 메소드를 호출해 같은 결과를 받아갈 가능성이 있기 때문에 캐시 기능으로 부족한 면이 존재
+- 메모이제이션 측면에서는 효율성이 약간 떨어지는 것 뿐
+	- 캐시는 같은 값으로 같은 결과를 연산하는 일을 두번 이상 실행하지 않겠다는 것이기 때문
+- 캐시할 객체를 한번만 생성해야하는 객체의 캐시의 경우에는 똑같은 결과를 2개 이상 만들어내는 문제점이 안전성 문제로 이어질 수 있음. 
+![memoizer2](/img/memoizer2.png)   
+
+- 특정 스레드가 compute 메소드에서 연산을 시작했을 때, 다른 스레드는 현재 어떤 연산이 이뤄지고 있는지 알 수 없음
+	- 따라서 그림과 같이 동일한 연산을 시작 할 수 있음
+
+</br>  
+
+~~~java
+public class Memoizer3 <A, V> implements Computable<A, V> {
+    private final Map<A, Future<V>> cache = new ConcurrentHashMap<A, Future<V>>();
+    private final Computable<A, V> c;
+
+    public Memoizer3(Computable<A, V> c) {
+        this.c = c;
+    }
+
+    public V compute(final A arg) throws InterruptedException {
+        Future<V> f = cache.get(arg);
+        if (f == null) {
+            Callable<V> eval = new Callable<V>() {
+                public V call() throws InterruptedException {
+                    return c.compute(arg);
+                }
+            };
+            FutureTask<V> ft = new FutureTask<V>(eval);
+            f = ft;
+            cache.put(arg, ft);
+            ft.run(); // c.compute는 이 안에서 호출
+        }
+        try {
+            return f.get();
+        } catch (ExecutionException e) {
+            throw LaunderThrowable.launderThrowable(e.getCause());
+        }
+    }
+}
+~~~
+- 결과를 저장하는 Map을 ConcurrentHashMap<A, Future<V>> 으로 정의
+- 원하는 값에 대한 연산 작업이 시작됐는지를 확인함
+- 시작된 작업이 없다면 FutureTask를 하나 만들어 Map에 등록하고, 연산 작업을 시작
+- 시작된 작업이 있다면 현재 실행중인 연산 작업이 긑나고 결과가 나올 때까지 대기
+- 캐시 측면에서는 FutureTask를 사용하여 거의 완벽하게 구현함
+- 동시 사용성도 갖고 있으며, 결과를 이미 알고 있다면 중복 계산 과정이 없이 결과를 즉시 가져갈 수 있음
+	- 특정 스레드가 연산 작업을 진행중이라면 뒤어어 오는 스레드는 진행 중인 연산 작업의 결과를 기다림
+- 여전히 여러 스레드가 같은 값에 대한 연산을 시작 할 수 있지만, memoizer2에 비하여 현저한 수준임. 
+![memoizer3](/img/memoizer3.png)  
