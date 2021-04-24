@@ -8,4 +8,5 @@
 [[week2] 스레드 안정성](https://github.com/garlickim/study-note/blob/main/book/java-concurrency-in-practice/%5Bweek2%5D%20%EC%8A%A4%EB%A0%88%EB%93%9C%20%EC%95%88%EC%A0%95%EC%84%B1.md)       
 [[week3] 객체 공유](https://github.com/garlickim/study-note/blob/main/book/java-concurrency-in-practice/%5Bweek3%5D%20%EA%B0%9D%EC%B2%B4%20%EA%B3%B5%EC%9C%A0.md)  
 [[week4] 객체 구성](https://github.com/garlickim/study-note/blob/main/book/java-concurrency-in-practice/%5Bweek4%5D%20%EA%B0%9D%EC%B2%B4%20%EA%B5%AC%EC%84%B1.md)  
-[[week5] 구성 단위](https://github.com/garlickim/study-note/blob/main/book/java-concurrency-in-practice/%5Bweek5%5D%20%EA%B5%AC%EC%84%B1%20%EB%8B%A8%EC%9C%84.md)
+[[week5] 구성 단위](https://github.com/garlickim/study-note/blob/main/book/java-concurrency-in-practice/%5Bweek5%5D%20%EA%B5%AC%EC%84%B1%20%EB%8B%A8%EC%9C%84.md)  
+[1부 요약](https://github.com/garlickim/study-note/blob/main/book/java-concurrency-in-practice/1%EB%B6%80%20%EC%9A%94%EC%95%BD.md)
