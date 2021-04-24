@@ -694,12 +694,12 @@ public class Memoizer1 <A, V> implements Computable<A, V> {
 - 이전 결과를 기억하는 캐시(메모이제이션_memoization) 기능을 추가한 Memoizer1
 - HashMap은 스레드 안전하지 않아 compute 메소드에 synchronized 처리를 함
 	- 스레드 안전성은 확보하였으나 확장성 측면에서 문제가 생김
-	- 특정 시점에 여러 스레드 가운데 하나만 compute 메소드를 실행 할 수 있기 때문. 
+	- 특정 시점에 여러 스레드 가운데 하나만 compute 메소드를 실행 할 수 있기 때문.   
 	![memoizer1](/img/memoizer1.png)  
 
 </br>  
 
-~~java
+~~~java
 public class Memoizer2 <A, V> implements Computable<A, V> {
     private final Map<A, V> cache = new ConcurrentHashMap<A, V>();
     private final Computable<A, V> c;
@@ -725,7 +725,6 @@ public class Memoizer2 <A, V> implements Computable<A, V> {
 	- 캐시는 같은 값으로 같은 결과를 연산하는 일을 두번 이상 실행하지 않겠다는 것이기 때문
 - 캐시할 객체를 한번만 생성해야하는 객체의 캐시의 경우에는 똑같은 결과를 2개 이상 만들어내는 문제점이 안전성 문제로 이어질 수 있음. 
 ![memoizer2](/img/memoizer2.png)   
-
 - 특정 스레드가 compute 메소드에서 연산을 시작했을 때, 다른 스레드는 현재 어떤 연산이 이뤄지고 있는지 알 수 없음
 	- 따라서 그림과 같이 동일한 연산을 시작 할 수 있음
 
@@ -761,6 +760,7 @@ public class Memoizer3 <A, V> implements Computable<A, V> {
     }
 }
 ~~~
+
 - 결과를 저장하는 Map을 ConcurrentHashMap<A, Future<V>> 으로 정의
 - 원하는 값에 대한 연산 작업이 시작됐는지를 확인함
 - 시작된 작업이 없다면 FutureTask를 하나 만들어 Map에 등록하고, 연산 작업을 시작
@@ -768,5 +768,76 @@ public class Memoizer3 <A, V> implements Computable<A, V> {
 - 캐시 측면에서는 FutureTask를 사용하여 거의 완벽하게 구현함
 - 동시 사용성도 갖고 있으며, 결과를 이미 알고 있다면 중복 계산 과정이 없이 결과를 즉시 가져갈 수 있음
 	- 특정 스레드가 연산 작업을 진행중이라면 뒤어어 오는 스레드는 진행 중인 연산 작업의 결과를 기다림
-- 여전히 여러 스레드가 같은 값에 대한 연산을 시작 할 수 있지만, memoizer2에 비하여 현저한 수준임. 
-![memoizer3](/img/memoizer3.png)  
+- 여전히 여러 스레드가 같은 값에 대한 연산을 시작 할 수 있지만, memoizer2에 비하여 현저한 수준임.   
+![memoizer3](/img/memoizer3.png)    
+- Memoizer3 허점은 단일 연산이 아닌 복합 연산을 사용하기 때문, 락을 사용한 단일 연산으로 구성할 수가 없음
+
+</br>
+
+~~~java
+public class Memoizer <A, V> implements Computable<A, V> {
+    private final ConcurrentMap<A, Future<V>> cache
+            = new ConcurrentHashMap<A, Future<V>>();
+    private final Computable<A, V> c;
+
+    public Memoizer(Computable<A, V> c) {
+        this.c = c;
+    }
+
+    public V compute(final A arg) throws InterruptedException {
+        while (true) {
+            Future<V> f = cache.get(arg);
+            if (f == null) {
+                Callable<V> eval = new Callable<V>() {
+                    public V call() throws InterruptedException {
+                        return c.compute(arg);
+                    }
+                };
+                FutureTask<V> ft = new FutureTask<V>(eval);
+                f = cache.putIfAbsent(arg, ft);
+                if (f == null) {
+                    f = ft;
+                    ft.run();
+                }
+            }
+            try {
+                return f.get();
+            } catch (CancellationException e) {
+                cache.remove(arg, f);
+            } catch (ExecutionException e) {
+                throw LaunderThrowable.launderThrowable(e.getCause());
+            }
+        }
+    }
+}
+~~~
+- ConcurrentMap의 putIfAbsent 메소드르 ㄹ통해 단일 연산으로 결과를 저장
+- Future 객체를 캐시하는 방법은 캐시 공해를 유발할 수 있음
+	- 특정 시점에 시도했던 연산이 취소되거나 오류가 발생하면 Future 객체 역시 취소되거나 오류가 발생했던 상황을 알려줄 것
+- Memoizer 클래스는 연산이 취소된 경우엔 캐시에서 해당하는 Future 객체를 제거함
+- 캐시 만료 기능은 FutureTask 클래스를 상속받아 만료된 결과인지 여부를 알 수 있는 새로운 클래스를 만들고, 결과 캐시를 주기적으로 조회하여 제거하는 기능을 구현하는 방식으로 해결할 수 있음
+
+</br>
+
+~~~java
+@ThreadSafe
+public class Factorizer implements Servlet {
+    private final Computable<BigInteger, BigInteger[]> c =
+            new Computable<BigInteger, BigInteger[]>() {
+                public BigInteger[] compute(BigInteger arg) {
+                    return factor(arg);
+                }
+            };
+    private final Computable<BigInteger, BigInteger[]> cache = new Memoizer<BigInteger, BigInteger[]>(c);
+
+    public void service(ServletRequest req, ServletResponse resp) {
+        try {
+            BigInteger i = extractFromRequest(req);
+            encodeIntoResponse(resp, cache.compute(i));
+        } catch (InterruptedException e) {
+            encodeError(resp, "factorization interrupted");
+        }
+    }
+}
+~~~
+- Memoizer를 사용하여 이전에 계산했던 값을 효율적이면서 확장성 있게 관리함
