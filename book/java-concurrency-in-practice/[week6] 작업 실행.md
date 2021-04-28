@@ -190,4 +190,117 @@ public class WithinThreadExecutor implements Executor {
 - Executor를 사용하면 사용하지 않을 때보다 애플리케이션의 성능 튜닝, 모니터링, 로깅, 오류 처리 등의 방법으로 효과적으로 처리하기 좋음
 
 ### 6.2.4 Executor 동작 주기
+- Executor를 구현하는 클래스는 대부분 작업을 처리하기 위한 스레드를 생성하도록 되어있음
+- Executor를 제대로 종료하지 않으면 JVM 자체가 종료되지 않고 대기하기도 함
+- Executor는 작업을 비동적으로 실행하기 때문에 앞서 실행시켰던 작업의 상태를 특정 시점에 정확하게 파악하기 어려움
+- 애플리케이션을 종료하는 방법은 안전한 종료 방법과 강제적인 종료 방법이 존재
+- 서비스를 실행하는 동작 주기와 관련해 Executor를 상속받는 ExecutorService 인터페이스에는 동작 주기를 관리할 수 있는 메소드가 추가되어 있음
+~~~java
+public interface ExecutorService extends Executor {
+	void shutdown();
+	List<Runnable> shutdownNow();
+	boolean isShutdown();
+	boolean isTerminated();
+	boolean awaitTermination(long timeout, TimeUnit unit)
+		throws InterruptedException;
+	// ... 작업을 등록할 수 있는 몇 가지 추가 메소드
+}
+~~~
+- ExecutorService가 갖고 있는 동작 주기에는 실행중(running), 종료중(shutting down), 종료(terminated) 세가지 상태가 있음
+- ExecutorService를 처음 생성하면 실행중 상태
+- shutdown 메소드를 실행하면 안전한 종료 절차를 진행하며 종료중 상태로 진입
+	- 종료중 상태에서는 새로운 작업을 등록받지 않으며, 이전 작업을 모두 끝마침
+- shutdownNow 메소드를 실행하면 강제 종료 절차를 진행
+	- 현재 진행중인 작업도 가능한 한 취소시키고, 실행되지 않고 대기 중이던 작업은 더이상 실행시키지 않음
+- ExecutorService의 하위 클래스인 ThreadPoolExecutor는 종료 절차가 진행중일 때, 새로운 작업을 등록하려하면 실행 거절 핸들러(rejected execution handler)를 통해 오류로 처리함
+	- 실행 거절 핸들러에 따라 다르지만, 등록하려는 작업을 무시할 수도 있으며 RejectedExecutionException을 발생시킬수도 있음
+- ExecutorService가 종료 상태로 들어갈때까지 기다리고자 한다면 awaitTermination 메소드로 대기할 수 있음
+- isTerminated 메소드를 주기적으로 호출해 종료 상태로 들어갔는지 확인 가능
+~~~java
+public class LifecycleWebServer {
+    private final ExecutorService exec = ...;
+
+    public void start() throws IOException {
+        ServerSocket socket = new ServerSocket(80);
+        while (!exec.isShutdown()) {
+            try {
+                final Socket conn = socket.accept();
+                exec.execute(new Runnable() {
+                    public void run() {
+                        handleRequest(conn);
+                    }
+                });
+            } catch (RejectedExecutionException e) {
+                if (!exec.isShutdown())
+                    log("task submission rejected", e);
+            }
+        }
+    }
+
+    public void stop() {
+        exec.shutdown();
+    }
+
+    void handleRequest(Socket connection) {
+        Request req = readRequest(connection);
+        if (isShutdownRequest(req))
+            stop();
+        else
+            dispatchRequest(req);
+    }
+}
+~~~
+- LifecycleWebServer는 두가지 방법으로 종료시킬 수 있음
+	- stop 메소드를 호출하는 방법
+	- 클라이언트 축에서 특정한 형태의 HTTP 요청을 전송하는 방법
+
+### 6.2.5 지연 작업, 주기적 작업
+- 자바 라이브러리에 포함된 Timer 클래스를 사용하면 특정 시간 이후에 원하는 작업을 실행하는 지연 작업이나 주기적인 작업을 실행할 수 있음
+- Timer는 그 자체로 약간의 단점이 있기 때문에 ScheduledThreadPoolExecutor를 사용하는 방법이 나음
+- ScheduledThreadPoolExecutor를 생성하는 방법
+	- ScheduledThreadPoolExecutor 클래스의 생성자를 호출해 생성
+	- newScheduledThreadPool 팩토리 메소드를 사용해 생성
+- Timer 단점
+	- Timer 클래스는 등록된 작업을 실행시키는 스레드를 하나만 생성해 사용함
+	- Timer에 등록된 작업이 오래 걸리면, 등록된 다른 Task 작업이 정해진 시간에 실행되지 않을 가능성이 높음
+	- TimerTask가 동작하던 도중에 예상치 못한 Exception을 던지는 경우, 예측하지 못한 상태로 넘어갈 수 있음
+		- Timer 스레드는 예외를 전혀 처리하지 않기 때문에 Timer 스레드 자체가 멈춰버릴 가능성이 존재
+	- 오류가 발생해 스레드가 종료된 상황에서 자동으로 새로운 스레드를 만들어 주지 않음
+		- 이런 상황에 다다르면 Timer에 등록된 모든 작업이 취소되었다고 판단하고, 등록됐던 TimerTask는 실행되지 않으며 새로운 작업을 등록할 수 없음 
+- ScheduledThreadPoolExecutor를 사용하면 지연 작업과 주기적 작업마다 여러 개의 스레드를 할당해 작업을 실행함
+	- 각자 실행 예정 시각을 벗어나는 일이 없도록 조절해줌
+~~~java
+public class OutOfTime {
+    public static void main(String[] args) throws Exception {
+        Timer timer = new Timer();
+        timer.schedule(new ThrowTask(), 1);
+        SECONDS.sleep(1);
+        timer.schedule(new ThrowTask(), 1);
+        SECONDS.sleep(5);
+    }
+
+    static class ThrowTask extends TimerTask {
+        public void run() {
+            throw new RuntimeException();
+        }
+    }
+}
+~~~
+- Timer 클래스가 내부적으로 어떻게 꼬일 수 있는지 보여주고, 문제 발생시 작업을 등록하려는 애플리케이션에서 어떤 문제가 발생하는지 보여주는 예
+- 6초 동안 실행되다 종료될 것이라 예상되지만, 1초 후 "Timer already cancelled" 메시지를 뿌리고 IllegalStateException 발생 후 종료됨
+	- ScheduledThreadPoolExecutor에서는 이와 같이 오류가 발생하는 경우를 안정적으로 처리해줌
+- 특별한 스케쥴 방법을 지원하는 서비스를 구현해야 한다면 DelayQueue 사용을 권장
+- DelayQueue는 큐 내부에 여러 개의 Delayed 객체로 작업을 관리함
+	- 각각의 Delayed 객체는 저마다의 시각을 갖고 있음
+	- DelayQueue에서 뽑아내는 객체는 객체마다 지정되어 있던 시각 순서로 정렬되어 뽑아짐
+
+</br>
+
+## 6.3  병렬로 처리할 만한 작업
+- 서버 애플리케이션에서 클라이언트의 요청 한 건을 처리하는 과정에서도 병렬화해 처리하는 모습을 볼 수 있음
+	- 데이터베이스 서버 같은 경우에 이런 기법을 많이 사용
+
+</br>
+
+### 6.3.1 예제: 순차적 페이지 렌더링
 - 
