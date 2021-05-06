@@ -223,3 +223,135 @@ public Task getNextTask(BlockingQueue<Task> queue) {
 - 인터럽트는 해당 스레드의 주의를 끄는 정도로만 사용하고, 인터럽트를 요청하는 스레드가 갖고 있는 다른 상태 값을 사용해 인터럽트 걸린 스레드가 어떻게 동작해야 하는지를 지정하는 경우도 있음
 
 ### 7.1.4 예제: 시간 지정 실행
+- 작업을 실행할 때 실행 도중에 예외를 띄우는 경우가 있는지 확인하고자 하는 작업을 실행시키는 경우가 존재함
+~~~java
+private static final ScheduledExecutorService cancelExec = ...;
+
+public static void timedRun(Runnable r, long timeout, TimeUnit unit) {
+	final Thread taskThread = Thread.currentThread();
+	cancelExec.schedule(new Runnable() {
+		public void run() { taskThread.interrupt(); }
+	}, timeout, unit);
+	r.run();
+}
+~~~
+- 실제 작업을 호출하는 스레드 내부에서 실행시키고, 일정 시간이 지난 이후에 인터럽트를 걸도록 되어있는 작업 중단용 스레드를 따로 실행시킴
+- 작업을 실행하는 도중에 확인되지 않은 예외가 발생하는 상황에 대응할 수 있음
+- 스레드에 인터럽트를 걸 때, 대상 스레드의 인터럽트 정책을 알고 있어야 한다는 규칙을 어기고 있음
+	- 호출하는 스레드의 인터럽트 정책은 알 수 없기 때문
+- 작업 내부가 인터럽트에 제대로 반응하지 않도록 만들어져 있다면 timedRun 메소드는 작업이 끝날 때까지 리턴되지 않고 계속 실행될 것
+
+</br>
+
+~~~java
+public static void timedRun(final Runnable r, 
+							long timeout, TimeUnit unit) 
+							throws InterruptedException {
+	class RethrowableTask implements Runnable {
+		private volatile Throwable t;
+		public void run() {
+			try { r.run(); }
+			catch(Throwable t) { this.t = t; }
+		}
+
+		void rethrow() {
+			if (t != null)
+				throw launderThrowable(t);
+		}
+	}
+
+	RethrowableTask task = new RethrowableTask();
+	final Thread taskThread = new Thread(task);
+	taskThread.start();
+	cancelExec.schedule(new Runnable() {
+		public void run() { taskThread.interrupted(); }
+	}, timeout, unit);
+	taskThread.join(unit.toMillis(timeout));
+	task.rethrow();
+}
+~~~
+- 작업을 실행하도록 생성한 스레드에는 적절한 실행 정책을 따로 정의할 수도 있고, 작업이 인터럽트에 응답하지 않는다 해도 시간이 제한된 메소드 자체는 호출한 메소드에게 리턴됨
+- 작업 실행 과정에서 예외가 발생했다면 해당 예외를 상위 메소드에게 다시 던짐
+- Throwable 클래스는 일단 저장해두고 호출 스레드와 작업 스레드가 서로 공유하는데, 예외를 작업 스레드에서 호출 스레드로 안전하게 공개할 수 있도록 volatile로 선언하고 있음
+- timeRun 메소드가 리턴됐을 때 정상적으로 스레드가 종료된 것인지 join 메소드에서 타임아웃이 걸린 것인지 알 수 없다는 단점을 지님
+
+### 7.1.5 Future를 사용해 작업 중단
+- ExecutorService.submit 메소드를 실행하면 등록한 작업을 나타내는 Future 인스턴스를 리턴받음
+- Future에는 cancel 메소드가 있고, mayInterruptIfRunning이라는 불린 값을 하나 넘겨 받으며, 취소 요청에 따른 작업 중단 시도가 성공인지를 알려주는 결과 값을 리턴받을 수 있음
+- mayInterruptIfRunning 값으로 false를 넘겨주면 "아직 실행하지 않았다면 실행시키지 말아라" 라는 의미로 해석되며, 인터럽트에 대응하도록 만들어지지 않은 작업에서는 항상 false를 넘겨줘야함
+- Executor에서 기본적으로 작업을 실행하기 위해 생성하는 스레드는 인터럽트가 걸렸을 때 작업을 중단할 수 있도록 하는 인터럽트 정책을 사용함
+	- 기본 Executor에 작업을 등록하고 넘겨받은 Future에서는 cancel 메소드에 mayInterruptIfRunning 값으로 true를 넘겨 호출해도 문제 없음
+- 작업을 중단하려 할 때에는 항상 스레드에 직접 인터럽트를 거는 대신 Future의 cancel 메소드를 사용해야 함
+~~~java
+public static void timedRun(Runnable r,
+                            long timeout, TimeUnit unit) 
+							throws InterruptedException {
+    Future<?> task = taskExec.submit(r);
+    try {
+        task.get(timeout, unit);
+    } catch (TimeoutException e) {
+        // finally 블록에서 작업이 중단될 것이다.
+    } catch (ExecutionException e) {
+        // 작업 내부에서 예외 상황 발생. 예외를 다시 던진다.
+        throw launderThrowable(e.getCause());
+    } finally {
+        // 이미 종료됐다 하더라도 별다른 악영향은 없다.
+        task.cancel(true); // 실행중이라면 인터럽트를 건다.
+    }
+}
+~~~
+- Future.get 메소드에서 InterruptedException이 발생하거나 TimeoutException이 발생했을 때, 만약 예외 상황이 발생한 작업의 결과는 필요가 없다고 한다면 해당 작업에 대해 Future.cancel 메소드를 호출해 작업을 중단하는 것이 좋음
+
+### 7.1.6 인터럽트에 응답하지 않는 블로킹 작업 다루기 
+- 여러 블로킹 메소드는 대부분 인터럽트가 발생하는 즉시 멈추면서 InterruptedException을 띄우도록 되어 있으며, 작업 중단 요청에 적절하게 대응하는 작업을 쉽게 구현할 수 있음
+- 일부 상황에서는 인터럽트와 유사한 기법을 활용해 블로킹 메소드에서 대기 중인 스레드가 작업을 멈추도록 할 수 있긴 하지만, 해당 스레드가 대기 상태에 멈춰 있는 이유가 무엇인지 정확하게 이해해야 함
+	- **java.io 패키지의 동기적 소켓 I/O**
+		- 가장 대표적인 블로킹 I/O의 예는 소켓에서 데이터를 읽어오거나 데이터를 쓰는 부분
+		- InputStream의 read(), OutputStream write() 인터럽트에 반응하지 않도록 되어있음
+		- 해당 스트림이 연결된 소켓을 직접 닫으면 대기중이던 read(),write()가 중단되며 SocketException이 발생함
+	- **java.nio 패키지의 동기적 I/O**
+		- InterruptibleChannel에서 대기하고 있는 스레드에 인터럽트를 걸면 ClosedByInterruptException이 발생하면서 해당 채널이 닫힘
+		- InterruptibleChannel을 닫으면 해당 채널로 작업을 실행하던 스레드에서 AsynchronousCloseException이 발생함
+	- **Selector를 사용한 비동기적 I/O**
+		- 스레드가 Selector 클래스의 select 메소드에서 대기 중인 경우, close 메소드를 호출하면 closeSelectorException을 발생시키면서 즉시 리턴함
+	- **락 확보**
+		- Lock 인터페이스를 구현한 락 클래스의 lockInterruptibly 메소드를 사용하면 락을 확보할 때까지 대기하면서 인터럽트에도 응답하도록 구현할 수 있음
+
+~~~java
+public class ReaderThread extends Thread {
+    private final Socket socket;
+    private final InputStream in;
+
+    public ReaderThread(Socket socket) throws IOException {
+        this.socket = socket;
+        this.in = socket.getInputStream();
+    }
+
+    public void interrupt() {
+        try {
+            socket.close();
+        } catch (IOException ignored) {
+        } finally {
+            super.interrupt();
+        }
+    }
+
+    public void run() {
+        try {
+            byte[] buf = new byte[BUFSZ];
+            while (true) {
+                int count = in.read(buf);
+                if (count < 0)
+                    break;
+                else if (count > 0)
+                    processBuffer(buf, count);
+            }
+        } catch (IOException e) { /* 스레드를 종료한다 */
+        }
+    }
+}
+~~~
+- 표준적이지 않은 방법으로 작업을 중단하는 기능을 속으로 감춰버리는 방법
+- ReaderThread 클래스에 인터럽트를 걸었을 때 read 메소드에서 대기 중인 상태이거나 기타 인터럽트에 응답할 수 있는 블로킹 메소드에 멈춰 있을 때에도 작업을 중단시킬 수 있음
+
+### 7.1.7 newTaskFor 메소드로 비표준적인 중단 방법 처리
