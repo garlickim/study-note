@@ -355,3 +355,537 @@ public class ReaderThread extends Thread {
 - ReaderThread 클래스에 인터럽트를 걸었을 때 read 메소드에서 대기 중인 상태이거나 기타 인터럽트에 응답할 수 있는 블로킹 메소드에 멈춰 있을 때에도 작업을 중단시킬 수 있음
 
 ### 7.1.7 newTaskFor 메소드로 비표준적인 중단 방법 처리
+- newTaskFor 메소드도 ExecutorService의 submit 메소드와 마찬가지로 드록된 작업을 나타내는 Future 객체를 리턴해주는데, 이전과는 다른 RunnableFuture 객체를 리턴함
+- RunnableFuture는 Runnable과 Future 인터페이스를 모두 상속받음
+	- java 6이후로는 FutureTask에서 RunnableFuture를 구현함
+- Future.cancel 메소드를 오버라이드하면 작업 중단 과정을 원하는 대로 변경할 수 있음
+	- 중단과정의 로깅, 통계 값 보관, etc..
+~~~java
+public interface CancellableTask <T> extends Callable<T> {
+    void cancel();
+
+    RunnableFuture<T> newTask();
+}
+
+
+@ThreadSafe
+public class CancellingExecutor extends ThreadPoolExecutor {
+    ...
+    protected <T> RunnableFuture<T> newTaskFor(Callable<T> callable) {
+        if (callable instanceof CancellableTask)
+            return ((CancellableTask<T>) callable).newTask();
+        else
+            return super.newTaskFor(callable);
+    }
+}
+
+public abstract class SocketUsingTask <T> implements CancellableTask<T> {
+    @GuardedBy("this") private Socket socket;
+
+    protected synchronized void setSocket(Socket s) {
+        socket = s;
+    }
+
+    public synchronized void cancel() {
+        try {
+            if (socket != null)
+                socket.close();
+        } catch (IOException ignored) {
+        }
+    }
+
+    public RunnableFuture<T> newTask() {
+        return new FutureTask<T>(this) {
+            public boolean cancel(boolean mayInterruptIfRunning) {
+                try {
+                    SocketUsingTask.this.cancel();
+                } finally {
+                    return super.cancel(mayInterruptIfRunning);
+                }
+            }
+        };
+    }
+}
+~~~
+- CancellingExecutor는 ThreadPoolExecutor 클래스를 상속받고, newTaskFor 메소드르 오버라이드해 CancellableTask에 추가된 기능을 활용할 수 있도록 함
+- SocketUsingTask 클래스는 CancellableTask를 상속받으면서 Future.cancel 메소드에서 super.cancel 메소드를 호출하고 소켓도 닫도록 구현함
+	- 실행 중인 작업에 중단 요청이 있을 때, 대응하는 속도를 크게 개선할 수 있음
+- 작업을 중단하는 과정에서도 응답속도를 떨어뜨리지 않으면서 인터럽트에 대응하는 블로킹 메소드를 안전하게 호출할 수 있으며, 대기 상태에 들어갈 수있는 소켓 I/O 메소드와 같은 기능도 호출 할 수 있음
+
+</br>
+
+## 7.2 스레드 기반 서비스 중단
+- 스레드를 직접 소유하고 있는 않는 한 해당 스레드에 인터럽트를 걸거나 우선 순위를 조정하는 등의 작업을 해서는 안됨
+- 스레드를 소유하는 객체는 대부분 해당 스레드를 생성한 객체라고 볼 수 있음
+- 스레드 풀에 들어 있는 모든 작업 스레드는 해당 하는 스레드 풀이 소유한다고 볼 수 있고, 개별 스레드에 인터럽트를 걸어야 하는 상황이 된다면 그 작업은 스레드를 소유한 스레드 풀에서 책임을 져야 함
+- 애플리케이션은 개별 스레드를 직접 소유하고 있지 않기 떄문에 개별 스레드를 직접 조작하는 일이 없어야 함
+	- 애플리케이션이 개별 스레드에 직접 액세스하는 대신 스레드 기반 서비스가 스레드의 시작부터 종료까지 모든 기능에 해당하는 메소드를 직접 제공해야 함
+- 스레드 기반 서비스를 생성한 메소드보다 생성된 스레드 기반 서비스가 오래 실행될 수 있는 상황이라면, 스레드 기반 서비스에서는 항상 종료시키는 방법을 제공해야 함
+
+</br>
+
+### 7.2.1 예제: 로그 서비스
+- 대부분의 서버 애플리케이션은 저마다 적절한 로그 서비스를 갖고 있음
+- PrintWriter와 같은 스트림 기반 클래스는 스레드에 안전하기 때문에 println으로 필요한 내용을 출력하는 기능을 사용할 때 별다른 동기화 기법이 필요하지는 않음
+~~~java
+public class LogWriter {
+    private final BlockingQueue<String> queue;
+    private final LoggerThread logger;
+
+    public LogWriter(Writer writer) {
+        this.queue = new LinkedBlockingQueue<String>(CAPACITY);
+        this.logger = new LoggerThread(writer);
+    }
+
+    public void start() {
+        logger.start();
+    }
+
+    public void log(String msg) throws InterruptedException {
+        queue.put(msg);
+    }
+
+    private class LoggerThread extends Thread {
+        private final PrintWriter writer;
+        ...
+        public void run() {
+            try {
+                while (true)
+                    writer.println(queue.take());
+            } catch (InterruptedException ignored) {
+            } finally {
+                writer.close();
+            }
+        }
+    }
+}
+~~~
+- LogWriter 클래스에서는 로그 출력 기능을 독립적인 스레드로 구현하는 모습을 보여주고 있음
+- 로그 메시지를 실제로 생성하는 스레드가 BlockingQueue를 사용해 메시지를 출력 전담 스레드에게 넘겨주며, 출력 전담 스레드는 큐에 쌓인 메시지를 가져다 화면에 출력함
+	- 전형적인 다수의 프로듀서와 단일 컨슈머가 동작하는 패턴
+- 로그 출력 전담 스레드에 문제가 생기면, 출력 스레드가 올바르게 동작하기 전까지 BlockingQueue가 막혀버리는 경우가 발생할 수 있음
+- 애플리케이션을 종료하려 할 때 로그 출력 전담 스레드가 계속 실행되느라 JVM이 정상적으로 멈추지 않는 경우가 발생할 수도 있음
+- 로그 출력 스레드에서 작업 도중 인터럽트가 걸리면, InterruptedException을 잡아 그냥 리턴되도록 구현하면 출력 스레드는 쉽게 종료시킬 수 있음
+- 단순히 멈춰버리기만 하면 그동안 출력시키려고 큐에 쌓여있던 로그를 잃어버리게 되며, 로그 출력을 위해 log 메소드 호출시 큐가 가득 차서 메시지를 큐에 넣을 때까지 대시 상태에 들어가 있던 스레드는 영원히 대기 상태에 머물게 됨
+
+</br>
+
+~~~java
+public void log(String msg) throws InterruptedException {
+	if(!shutdownRequested)
+		queue.put(msg);
+	else
+		throw new IllegalStateException("logger is shutdown");
+}
+~~~
+- 클래스를 종료시키고자 할 때 LogWriter 내부에 "종료 요청이 들어왔다"는 플래그를 마련해두고, 플래스가 설정된 경우에는 더이상 로그 메시지를 큐에 넣을 수 없도록 하는 것
+- 컨슈머 부분에서는 종료 요청이 들어왔을 때 큐에 있는 메시지를 모두 가져가 쌓여 있던 메시지를 모두 출력할 기회를 얻음
+- 실행 도중 경쟁 조건에 들어 갈 수 있기 때문에 완전히 신뢰할 만한 방법은 아님
+- 프로듀서는 로그 출력 서비스가 아직 종료되지 않았다고 판단하고 실제로 종료된 이후에도 로그 메시지를 큐에 쌓으려고 대기 상태에 들어갈 가능성이 존재
+- LogWriter 클래스에 안정적인 종료 방법을 추가하려면 경쟁 조건에 들어가지 않는 방법을 찾아야 함
+	- 로그 메시지를 추가하는 부분을 단일 연산으로 구현해야 한다는 의미
+	- 단일 연산으로 종료됐는지를 확인하며 로그 메시지를 추가할 수 있는 권한이라고 볼 수 있는 카운터를 하나 증가시키는 방법을 사용
+
+	~~~java
+	public class LogService {
+	    private final BlockingQueue<String> queue;
+	    private final LoggerThread loggerThread;
+	    private final PrintWriter writer;
+	    @GuardedBy("this") private boolean isShutdown;
+	    @GuardedBy("this") private int reservations;
+
+	    public LogService(Writer writer) {
+	        this.queue = new LinkedBlockingQueue<String>();
+	        this.loggerThread = new LoggerThread();
+	        this.writer = new PrintWriter(writer);
+	    }
+
+	    public void start() {
+	        loggerThread.start();
+	    }
+
+	    public void stop() {
+	        synchronized (this) {
+	            isShutdown = true;
+	        }
+	        loggerThread.interrupt();
+	    }
+
+	    public void log(String msg) throws InterruptedException {
+	        synchronized (this) {
+	            if (isShutdown)
+	                throw new IllegalStateException(...);
+	            ++reservations;
+	        }
+	        queue.put(msg);
+	    }
+
+	    private class LoggerThread extends Thread {
+	        public void run() {
+	            try {
+	                while (true) {
+	                    try {
+	                        synchronized (LogService.this) {
+	                            if (isShutdown && reservations == 0)
+	                                break;
+	                        }
+	                        String msg = queue.take();
+	                        synchronized (LogService.this) {
+	                            --reservations;
+	                        }
+	                        writer.println(msg);
+	                    } catch (InterruptedException e) { /* 재시도 */
+	                    }
+	                }
+	            } finally {
+	                writer.close();
+	            }
+	        }
+	    }
+	}
+	~~~
+
+
+### 7.2.2 ExecutorService 종료
+- ExecutorService를 종료하는 두가지 방법
+	- shutdown 메소드를 사용해 안전하게 종료하는 방법
+	- shutdownNow 메소드를 사용해 강제로 종료하는 방법
+- shutdownNow를 사용해 강제로 종료시키고 나면 먼저 실행중인 모든 작업을 중단하도록 한 다음 아직 시작하지 않은 작업의 목록을 결과로 리턴해줌
+- 강제로 종료하는 방법은 응답이 빠르지만 실행 도중 스레드에 인터럽트를 걸어야하기 때문에 중단 과정에서 여러가지 문제 발생 가능성이 존재
+- 안전하게 종료하는 방법은 종료 속도가 느리지만 큐에 등록된 모든 작업을 처리할 때까지 스레드를 종료시키지 않고 놔두기 때문에 작업을 잃을 가능성이 없어 안전
+
+~~~java
+public class LogService {
+	private final ExecutorService exec = newSingleThreadExecutor();
+	...
+	public void start() { }
+
+	public void stop() throws InterruptedException {
+		try {
+			exec.shutdown();
+			exec.awaitTermination(TIMEOUT, UNIT);
+		} finally {
+			writer.close();
+		}
+	}
+	public void log(String msg) {
+		try {
+			exec.execute(new WriteTask(msg));
+		} catch (RejectedExecutionException ignored) { }
+	}
+}
+~~~
+- ExecutorService를 직접 활용하는 대신 다른 클래스의 내부에 캡슐화해서 시작과 종료 등의 기능을 연결해 호출할 수 있음
+- ExecutorService를 특정 클래스 내부에 캡슐화하면 애플리케이션에서 서비스와 스레드로 이어지는 소유 관계에 한단계를 더 추가하는 셈이고, 각 단계에 해당하는 클래스는 모두 자신이 소유한 서비스나 스레드의 시작과 종료에 관련된 기능을 관리함
+
+### 7.2.3 독약
+- 프로듀서-컨슈머 패턴으로 구성된 서비스를 종료시키도록 종용하는 또 다른 방법으로 독약(poison pill)이라고 불리는 방법이 있음
+	- 특정 객체를 큐에 쌓도록 되어 있으며, 객체는 "이 객체를 받았다면, 종료해야 한다"는 의미를 갖고 있음
+- FIFO 유형의 큐를 사용하는 경우에는 독약 객체를 사용했을 때 컨슈머가 쌓여 있던 모든 작업을 종료하고 독약 객체를 만나 종료되도록 할 수 있음
+- FIFO 큐에서는 객체의 순서가 유지되기 떄문에 독약 객체보다 먼저 큐에 쌓인 객체는 항상 독약 객체보다 먼저 처리됨
+- 프로듀서 측에서는 독약 객체를 한 번 큐에 넣고 나면 더 이상 다른 작업을 추가해서는 안됨
+~~~java
+public class IndexingService {
+    private static final File POISON = new File("");
+    private final IndexerThread consumer = new IndexerThread();
+    private final CrawlerThread producer = new CrawlerThread();
+    private final BlockingQueue<File> queue;
+    private final FileFilter fileFilter;
+    private final File root;
+
+    class CrawlerThread extends Thread {
+        public void run() {
+            try {
+                crawl(root);
+            } catch (InterruptedException e) { /* 통과 */
+            } finally {
+                while (true) {
+                    try {
+                        queue.put(POISON);
+                        break;
+                    } catch (InterruptedException e1) { /* 재시도 */
+                    }
+                }
+            }
+        }
+
+        private void crawl(File root) throws InterruptedException {
+            ...
+        }
+    }
+
+    class IndexerThread extends Thread {
+        public void run() {
+            try {
+                while (true) {
+                    File file = queue.take();
+                    if (file == POISON)
+                        break;
+                    else
+                        indexFile(file);
+                }
+            } catch (InterruptedException consumed) { }
+        }
+    }
+
+    public void start() {
+        producer.start();
+        consumer.start();
+    }
+
+    public void stop() {
+        producer.interrupt();
+    }
+
+    public void awaitTermination() throws InterruptedException {
+        consumer.join();
+    }
+}
+~~~
+- 단일 프로듀서, 단일 컨슈머를 사용하면서 독약 객체를 사용해 작업을 종료하도록 만듦
+- 독약 객체는 프로듀서의 개수와 컨슈머의 개수를 정확히 알고 있을 때에만 사용할 수 있음
+- 독약 객체 방법은 크게 제한이 없는 큐를 사용할 때 효과적으로 동작함
+
+### 7.2.4 예제: 단번에 실행하는 서비스
+- 일련의 작업을 순서대로 처리해야 하며, 작업이 모두 끝나기 전에는 리턴되지 않는 메소드는 내부에서만 사용할 Executor 인스턴스를 하나 확보할 수 있다면 서비스의 시작과 종료를 쉽게 관리할 수 있음
+	- invokeAll, invokeAny 메소드가 유용
+~~~java
+public boolean checkMail(Set<String> hosts, long timeout, TimeUnit unit)
+        throws InterruptedException {
+    ExecutorService exec = Executors.newCachedThreadPool();
+    final AtomicBoolean hasNewMail = new AtomicBoolean(false);
+    try {
+        for (final String host : hosts)
+            exec.execute(new Runnable() {
+                public void run() {
+                    if (checkMail(host))
+                        hasNewMail.set(true);
+                }
+            });
+    } finally {
+        exec.shutdown();
+        exec.awaitTermination(timeout, unit);
+    }
+    return hasNewMail.get();
+}
+~~~
+- checkMail 메소드는 먼저 메소드 내부에 Executor 인스턴스를 하나 생성하고, 각 서버별로 구별된 작업을 실행시킴
+- Executor 서비스를 종료시킨 다음, 각 작업이 모두 끝나면 Executor가 종료될 때까지 대기함
+
+### 7.2.5 shutdownNow 메소드의 약점
+- shutdownNow 메소드를 사용해 ExecutorService 를 강제로 종료시키는 경우에는 현재 실행 중인 모든 스레드의 작업을 중단시키도록 시도하고, 동록됐지만 실행은 되지 않았던 모든 작업의 목록을 리턴해줌
+- 실행 시작은 했지만 아직 완료되지 않은 작업이 어떤 것인지를 알아볼 수 있는 방법은 없음
+- 개별 작업 스스로가 작업 진행 정도 등의 정보를 외부에 알려주기 전에는 서비스를 종료하라고 했을 때 실행 중이던 작업의 상태를 알아볼 수 없음
+- 종료 요청을 받았지만 아직 종료되지 않은 작업이 어떤 작업인지 확인하려면 실행이 시작되지 않은 작업도 알아야 할 뿐더러 Executor 가 종료될 때 실행 중이던 작업이 어떤 것인지도 알아야 함
+~~~java
+public class TrackingExecutor extends AbstractExecutorService {
+    private final ExecutorService exec;
+    private final Set<Runnable> tasksCancelledAtShutdown =
+            Collections.synchronizedSet(new HashSet<Runnable>());
+
+    ...
+
+    public List<Runnable> getCancelledTasks() {
+        if (!exec.isTerminated())
+            throw new IllegalStateException(...);
+        return new ArrayList<Runnable>(tasksCancelledAtShutdown);
+    }
+
+    public void execute(final Runnable runnable) {
+        exec.execute(new Runnable() {
+            public void run() {
+                try {
+                    runnable.run();
+                } finally {
+                    if (isShutdown()
+                            && Thread.currentThread().isInterrupted())
+                        tasksCancelledAtShutdown.add(runnable);
+                }
+            }
+        });
+    }
+    // ExecutorService의 다른 메소드는 모두 exec에게 위임
+}
+~~~
+- ExecutorService를 내부에 캡슐화해 숨기고, execute 메소드를 정교하게 호출하면서 종료 요청이 발생한 이후에 중단된 작업을 기억해둠
+- TrackingExecutor는 시작은 됐지만 정상적으로 종료되지 않은 작업이 어떤 것인지를 정확하게 알 수 있음
+- 이런 기법이 제대로 동작하도록 하려면 개별 작업이 리턴될 때, 자신을 실행했던 스레드의 인터럽트 상태를 유지시켜야 함
+
+</br>
+
+~~~java
+public abstract class WebCrawler {
+    private volatile TrackingExecutor exec;
+    @GuardedBy("this") private final Set<URL> urlsToCrawl = new HashSet<URL>();
+
+    ...
+
+    public synchronized void start() {
+        exec = new TrackingExecutor(Executors.newCachedThreadPool());
+        for (URL url : urlsToCrawl) submitCrawlTask(url);
+        urlsToCrawl.clear();
+    }
+
+    public synchronized void stop() throws InterruptedException {
+        try {
+            saveUncrawled(exec.shutdownNow());
+            if (exec.awaitTermination(TIMEOUT, UNIT))
+                saveUncrawled(exec.getCancelledTasks());
+        } finally {
+            exec = null;
+        }
+    }
+
+    protected abstract List<URL> processPage(URL url);
+
+    private void saveUncrawled(List<Runnable> uncrawled) {
+        for (Runnable task : uncrawled)
+            urlsToCrawl.add(((CrawlTask) task).getPage());
+    }
+
+    private void submitCrawlTask(URL u) {
+        exec.execute(new CrawlTask(u));
+    }
+
+    private class CrawlTask implements Runnable {
+        private final URL url;
+        ...
+        public void run() {
+            for (URL link : processPage(url)) {
+                if (Thread.currentThread().isInterrupted())
+                    return;
+                submitCrawlTask(link);
+            }
+        }
+
+        public URL getPage() {
+            return url;
+        }
+    }
+}
+~~~
+- 작업 도중에 문서 수집기를 종료시키면 아직 시작하지 않은 작업과 실행 도중에 중단된 작업이 어떤 것인지를 찾아내며, 찾아낸 작업이 처리하던 URL을 기록해둠
+- 기록해 둔 URL을 통해 문서 수집기를 다시 시작했을 때 처리해야 할 페이지 목록으로 쉽게 등록할 수 있음
+- 멱등이 아닌 경우 안전성에 문제가 될 수 있으니 주의해야 함
+
+</br>
+
+## 7.3 비정상적인 스레드 종료 상황 처리
+- 스레드를 예상치 못하게 종료시키는 가장 큰 원인은 바로 RuntimeException
+- RuntimeException 은 대부분 프로그램이 잘못 짜여져서 발생하거나 기타 회복 불가능의 문제점을 나타내는 경우가 많기 때문에 try/catch 구문으로 잡지 못하는 경우가 많음
+- RuntimeException 은 호출 스택을 따라 상위로 전달되기보다는 현재 실행되는 시점에서 콘솔에 스택 호출 추적 내용을 출력하고 해당 스레드를 종료시키도록 되어 있음
+- 스레드 풀에서 사용하는 작업용 스레드나 스윙의 이벤트 처리 스레드와 같은 작업 처리용 스레드는 항상 Runnable 등의 인터페이스를 통해 남이 정의하고, 그래서 그 내용을 알 수 없는 작업을 실행하느라 온 시간을 보냄
+- 작업 처리 스레드는 자신이 실행하는 남의 작업이 제대로 동작하지 않을 수 있다고 가정하고 조심스럽게 실행해야 함
+- 작업 처리 스레드는 실행할 작업을 try-catch 구문 내부에서 실행해 예상치 못한 예외 상황에 대응할 수 있도록 준비하거나, try-finally 구문을 사용해 스레드가 피치 못할 사정으로 종료되는 경우에도 외부에 종료된다는 사실을 알려 프로그램의 다른 부분에서라도 대응할 수 있도록 해야 함
+- RuntimeException 을 catch 구문에서 잡아 처리해야 할 상황은 그다지 많지 않은데, 몇 안 되는 상황 가운데 하나가 바로 남이 Runnable 등으로 정의해 둔 작업을 실행하는 프로그램을 작성하는 경우
+~~~java
+public void run() {
+	Throwable thrown = null;
+	try {
+		while(!isInterrupted()) 
+			runTask(getTaskFromWorkQueue());
+	} catch (Throwable e) {
+		thrown = e;
+	} finally {
+		threadExited(this, thrown);
+	}
+}
+~~~
+- 실행 중이던 작업에서정의도지 않은 예외 상황이 발생한다면, 결국 해당 스레드가 종료되지는 하지만 종료되기 직전에 스레드 풀에게 스스로가 종료된다는 사실을 알려주고 멈춤
+	- 스레드 풀은 종료된 스레드를 삭제하고 새로운 스레드를 생성해 작업을 계속할 수 있음
+
+</br>
+
+### 7.3.1 정의되지 않은 예외 처리
+- 스레드 API를 보면 UncaughtExceptionHandler라는 기능을 제공
+- UncaughtExceptionHandler 기능을 사용하면 처리하지 못한 예외 상황으로 인해 특정 스레드가 종료되는 시점을 정확히 알 수 있음
+- 처리하지 못한 예외 상황 때문에 스레드가 종료되는 경우, JVM이 애플리케이션에서 정의한 UncaughtExceptionHandler를 호출하도록 할 수 있음
+~~~java
+public interface UncaughtExceptionHandler {
+	void uncaughtException(Thread t, Throwable e);
+}
+~~~
+
+~~~java
+public class UEHLogger implements Thread.UncaughtExceptionHandler {
+    public void uncaughtException(Thread t, Throwable e) {
+        Logger logger = Logger.getAnonymousLogger();
+        logger.log(Level.SEVERE, "Thread terminated with exception: " + t.getName(), e);
+    }
+}
+~~~
+- 오류 메시지를 출력하고, 애플리케이션에서 작성하는 로그 파일에 스택 트레이스를 출력하는 등의 작업이 일반적
+- 잠깐 실행하고 마는 애플리케이션이 아닌 이상, 예외가 발생했을 때 로그 파일에 오류를 출력하는 간단한 기능만이라도 확보할 수 있도록 모든 스레드를 대상으로 UncaughtExceptionHandler를 활용해야 함
+- 작업을 실행하는 도중에 예외가 발생해 작업이 중단되는 경우가 생길 때 오류가 발생했다는 사실을 즉시 알고자 한다면, 
+	- Runnable이나 Callable 인터페이스를 구현하면서 run 메소드에서 try/catch 구문으로 오류를 처리하도록 되어 있는 클래스르 ㄹ거쳐 실제 작업을 실행하도록 하거나
+	- ThreadPoolExecutor 클래스에 마련되어 있는 afterExecute 메소드를 오버라이드하는 방법으로 오류 상황을 알리도록 함
+- 예외 상황이 발생했을 때 UncaughtExceptionHandler가 호출되도록 하려면 **반드시** execute를 통해서 작업을 실행해야 함
+- submit 메소드로 작업을 등록했다면, 그 작업에서 발생하는 모든 예외 상황은 모두 해당 작업의 리턴 상태로 처리해야 함
+	- Future.get 메소드에서 해당 예외가 ExecutionException에 감싸진 상태로 넘어옴
+
+</br>
+
+## 7.4 JVM 종료
+- JVM 이 종료되는 두 가지 경우
+	- 예정된 절차대로 종료되는 경우
+	- 예기치 못하게 임의로 종료되는 경우
+
+</br>
+
+### 7.4.1 종료 훅
+- 예정된 절차대로 종료되는 경우에 JVM 은 가장 먼저 등록되어 있는 모든 종료 훅(shutdown hook)을 실행시킴
+- 종료 훅은 Runtime.addShutdownHook 메소드를 사용해 등록된 아직 시작되지 않은 스레드를 의미
+- 하나의 JVM 에 여러개의 종료 훅을 등록할 수도 있으며, 두 개 이상의 종료 훅이 등록되어 있는 경우에 어떤 순서로 훅을 실행하는지에 대해서는 아무런 규칙이 없음
+- 종료 훅이 모두 작업을 마치고 나면 JVM 은 runFinalizersOnExit 값을 확인해 true 라고 설정되어 있으면 클래스의 finalize 메소드를 모두 호출하고 종료함
+- JVM 은 종료 과정에서 계속해서 실행되고 있는 앱 내부의 스레드에 대해 중단 절차를 진행하거나 인터럽트를 걸지 않음
+- 만약 종료 훅이나 finalize 메소드가 작업을 마치지 못하고 계속해서 실행된다면 종료 절차가 멈추는 셈이며, JVM 은 계속해서 대기 상태로 머무르기 때문에 결국 JVM 을 강제로 종료하는 수 밖에 없음
+- JVM 을 강제로 종료시킬 때는 JVM 이 스스로 종료되는 것 이외에 종료 훅을 실행하는 등의 어떤 작업도 하지 않음
+- 종료 훅은 스레드 안전하게 만들어야 함
+- 공유된 자료를 사용해야 하는 경우에는 반드시 적절한 동기화 기법을 적용해야 함
+- 앱의 상태에 대해 어떤 가정도 해서는 안 되며, JVM 이 종료되는 원인에 대해서도 생각해서는 안 되는 등 어떤 상황에서도 아무런 가정 없이 올바르게 동작할 수 있도록 굉장히 방어적인 형태로 만들어야 함
+- JVM 이 종료될 때 종료 훅의 작업이 끝나기를 기다리기 때문에 마무리 작업을 최대한 빨리 끝내고 바로 종료해야 함
+- 종료 훅은 어떤 서비스나 앱 자체의 여러 부분을 정리하는 목적으로 사용하기 좋음
+	- 임시로 만들어 사용했던 파일을 삭제하거나, 운영체제에서 알아서 정리해주지 않는 모든 자원을 종료 훅에서 정리해야 함
+~~~java
+public void start() {
+	Runtime.getRuntime().addShutdownHook(new Thread() {
+		public void run() {
+			try { LogService.this.stop(); }
+			catch(InterruptedException ignored) { }
+		}
+	});
+}
+~~~
+- 종료 훅이 여러개 등록되어 있는 경우에는 여러 개의 종료 훅이 서로 동시에 실행되지 때문에 다른 종료 훅에서 해당 LogService를 사용하고 있었다면 로그를 남기고자 할 때 이미 LogService가 종료되어 문제가 발생할 수 있음
+- 종료 훅에서는 애플리케이션이 종료되거나 다른 종료 훅이 종료시킬 수 있는 서비스는 사용하지 말아야 함
+- 모든 서비스를 정리할 수 있는 하나의 종료 훅을 사용해 각 서비스를 의존성에 맞춰 순서대로 정리하는 것도 방법
+	- 각 서비스를 차례대로 정리하면 경쟁조건이나 데드락 등의 상황을 미연에 방지 할 수 있음
+
+### 7.4.2 데몬 스레드
+- 스레드는 두 가지 종류로 볼 수 있음
+	- 일반 스레드, 데몬 스레드
+- JVM 이 처음 시작할 때 main 스레드를 제외하고 JVM 내부적으로 사용하기 위해 실행하는 스레드(가비지 컬렉터 스레드나 기타 여러 부수적인 스레드)는 모두 데몬 스레드임
+- 새로운 스레드가 생성되면 자신을 생성해 준 부모 스레드의 데몬 설정 상태를 확인해 그 값을 그대로 사용하며, 따라서 main 스레드에서 생성한 모든 스레드는 기본적으로 데몬 스레드가 아닌 일반 스레드임
+- 일반 스레드와 데몬 스레드는 종료될 때 처리 방법이 약간 다를 뿐 그 외에는 모든 것이 완전히 동일함
+- 스레드 하나가 종료되면 JVM 은 남아있는 모든 스레드 가운데 일반 스레드가 있는지를 확인하고, 일반 스레드는 모두 종료되고 남아있는 스레드가 모두 데몬 스레드라면 즉시 JVM 종료 절차를 진행함
+- JVM 이 중단(halt)될 때는 모든 데몬 스레드가 버려지는 셈
+- finally 블록의 코드도 실행되지 않으며, 호출 스택도 원상 복구되지 않음
+- 데몬 스레드는 보통 부수적인 용도로 사용하는 경우가 많음
+- 데몬 스레드에 사용했던 자원을 꼭 정리해야 하는 일을 시킨다면, JVM이 종료될 때 자원을 정리하지 못할 수 있기 때문에 적절하지 않음
+- 데몬 스레드는 예고 없이 종료될 수 있기 때문에 앱 내부에서 시작시키고 종료하기에는 그다지 좋은 방법이 아님
+
+
+### 7.4.3 finalize 메소드
+- finalize 메소드는 과연 실행이 될 것인지 그리고 언제 실행될지에 대해서 아무런 보장이 없고, finalize 메소드를 정의한 클래스를 처리하는 데 상당한 성능상의 문제점이 생길 수 있음
+- finalize 메소드를 올바른 방법으로 구현하기도 쉬운 일이 아님
+- 대부분의 경우에는 finalize 메소드를 사용하는 대신 try-finally 구문에서 각종 close 메소드를 적절하게 호출하는 것만으로도 finalize 메소드에서 해야 할 일을 훨씬 잘 처리할 수 있음
+- finalize 메소드가 더 나을 수 있는 유일한 예는 바로 네이티브 메소드에서 확보했던 자원을 사용하는 객체 정도밖에 없음
+- finalize 메소드는 사용하지 마라
+
+</br>
+
+## 요약
+- 작업, 스레드, 서비스, 앱 등이 할 일을 모두 마치고 종료되는 시점을 적절하게 관리하려면 프로그램이 훨씬 복잡해질 수 있음
+- 자바에서는 선점적으로 작업을 중단하거나 스레드를 종료시킬 수 있는 방법을 제공하지 않음
+- 인터럽트라는 방법을 사용해 스레드 간의 협력 과정을 거쳐 작업 중단 기능을 구현하도록 하고 있으며, 작업 중단 기능을 구현하고 전체 프로그램에 일괄적으로 적용하는 일은 모두 개발자의 몫
+- FutureTask 나 Executor 등의 프레임웍을 사용하면 작업이나 서비스를 실행 도중에 중단할 수 있는 기능을 쉽게 구현할 수 있다는 점을 알아두어야 함
