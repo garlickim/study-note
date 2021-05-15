@@ -324,4 +324,328 @@ else
 </br>
 
 ## 8.4 ThreadPoolExecutor 상속
+- 하위 클래스가 오버라이드해 사용할 수 있도록 beforeExecute, afterExecute, terminated와 같은 여러가지 훅(hook)을 제공함
+- beforeExecute/afterExecute 메소드는 작업을 실행할 스레드의 내부에서 호출하도록 되어 있으며, 로깅 또는 작업 실행 시점이 언제인지 기록해두거나 실행 상태를 모니터링하는 등의 작업에 적당함
+- afterExecute 메소드는 run 메소드의 정상 종료 또는 Exception을 던지로 종료되는 상황에도 항상 호출됨
+- beforeExecute 메소드에서 RuntimeException이 발생하면 작업이 실행되지 않기 때문에 afterExecute 메소드 역시 실행되지 않음
+- 스레드 풀이 종료 절차를 마무리한 이후, 모든 작업과 모든 스레드가 종료되고나면 terminated 훅 메소드를 호출함
+- terminated 메소드에서는 Executor가 동작하는 과정에서 사용했던 자원을 반납하는 등의 일을 처리하거나 여러가지 알람, 로그 출력, 통계 값 확보 등의 작업을 진행하기에 적당한 메소드임
 
+</br>
+
+### 8.4.1 예제: 스레드 풀에 통계 확인 기능 추가
+~~~java
+public class TimingThreadPool extends ThreadPoolExecutor {
+    private final ThreadLocal<Long> startTime = new ThreadLocal<Long>();
+    private final Logger log = Logger.getLogger("TimingThreadPool");
+    private final AtomicLong numTasks = new AtomicLong();
+    private final AtomicLong totalTime = new AtomicLong();
+
+    protected void beforeExecute(Thread t, Runnable r) {
+        super.beforeExecute(t, r);
+        log.fine(String.format("Thread %s: start %s", t, r));
+        startTime.set(System.nanoTime());
+    }
+
+    protected void afterExecute(Runnable r, Throwable t) {
+        try {
+            long endTime = System.nanoTime();
+            long taskTime = endTime - startTime.get();
+            numTasks.incrementAndGet();
+            totalTime.addAndGet(taskTime);
+            log.fine(String.format("Thread %s: end %s, time=%dns",
+                    t, r, taskTime));
+        } finally {
+            super.afterExecute(r, t);
+        }
+    }
+
+    protected void terminated() {
+        try {
+            log.info(String.format("Terminated: avg time=%dns",
+                    totalTime.get() / numTasks.get()));
+        } finally {
+            super.terminated();
+        }
+    }
+}
+~~~
+- 작업 실행시간 측정을 위해 beforeExecute 메소드에서 시간을 기록함
+- afterExecute 메소드에서는 시작할 떄 기록해뒀던 시간을 참조해 작업이 실행된 시간을 알아냄
+- 훅 메소드 역시 작업을 실행했던 바로 그 스레드에서 호출하기 때문에 beforeExecute 에서 측정한 값을 ThreadLocal에 보관해두면 afterExecute 에서 안전하게 찾아낼 수 있음
+
+</br>
+
+## 8.5 재귀 함수 병렬화
+- 반복문 내부에서 복잡한 연산을 수행하거나 블로킹 I/O 메소드를 호출하는 등의 작업을 진행하는 부분이 있고, 각 반복 작업이 이전 회차와 독립적이라면 병렬화 할 수 있는 좋은 대상으로 생각할 수 있음
+- 반복문의 각 차수에 해당하는 작업이 서로 독립적이라 한다면, Executor를 활용하여 반복문을 병렬 프로그램으로 쉽게 변경할 수 있음
+~~~java
+void processSequentially(List<Element> elements) {
+	for(Element e : elements)
+		process(e);
+}
+
+void processInParallel(Executor exec, List<Element> elements) {
+	for(final Element e: elements)
+		exec.execute(new Runnable() {
+			public void run() { process(e); }
+		});
+}
+~~~
+- processInParallel을 호출하면 지정된 Executor에 실행할 작업을 모두 등록하기만 하고 리턴되기 때문에 processSequentially 메소드보다 훨씬 빨리 실행됨
+- 한묶음의 작업을 한꺼번에 등록하고 그 작업들이 모두 종료될 때까지 대기하고자 한다면 ExecutorService.invokeAll 메소드를 사용하는 것을 권장함
+- 반복문 내부의 작업을 개별적인 작업으로 구분해 실행하느라 추가되는 약간의 부하가 부담되지 않을 만큼 적지 않은 시간이 걸리는 작업이라야 효과를 볼 수 있음
+
+</br>
+
+~~~java
+public<T> void sequentialRecursive(List<Node<T>> nodes, Collection<T> results) {
+	for(Node<T> n: nodes) {
+		results.add(n.compute());
+		sequentialRecursive(n.getChildren(), results);
+	}
+}
+
+public<T> void parallelRecursive(final Executor exec, 
+								 List<Node<T>> nodes, 
+								 final Collection<T> results) {
+	for(final Node<T> n : nodes) {
+		exec.execute(new Runnable() {
+			public void run() {
+				results.add(n.compute());
+			}
+		});
+		parallelRecursive(exec, n.getChildren(), results);
+	}
+}
+~~~
+- sequentialRecursive 메소드는 트리 구조를 대상으로 깊이 우선 탐색을 실행하면서 각 노드에서 연산 작업을 처리하고 연산 결과를 컬렉션에 담음
+- parallelRecursive 메소드 역시 깊이 우선 탐색이지만, 노드를 방문시 결과를 계산하는 것이 아니라, 노드별 값을 계산하는 작업을 생성해 Executor에 등록시킴
+
+</br>
+
+~~~java
+public<T> Collection<T> getParallelResults(List<Node<T>> nodes) throws InterruptedException {
+	ExecutorService exec = Executor.newCachedThreadPool();
+	Queue<T> resultQueue = new ConcurrentLinkedQueue<T>();
+	parallelRecursive(exec, nodes, resultQueue);
+	exec.shutdown();
+	exec.awaitTermination(Long.MAX_VALUE, TimeUnit.SECONDS);
+	return resultQueue;
+}
+~~~
+- parallelRecursive 메소드를 호출하는 스레드는 parallelRecursive 메소드에서 사용할 전용 Executor를 하나 생성해 parallelRecursive 메소드를 호출한 다음, Executor의 shutdown 메소드와 awaitTermination 메소드를 차례로 호출해 모든 연산 작업이 마무리되기를 기다릴 수 있음
+
+</br>
+
+### 8.5.1 예제: 퍼즐 프레임웍
+- 먼저 '퍼즐'이라는 대상을 초기 위치, 목표 위치, 정상적인 이동 규칙 등의 세가지로 추상화하고, 세가지 개념을 묶어 퍼즐이라고 정의
+- 이동 규칙은 두가지 부분으로 나뉨
+	- 현재 위치에서 규정에 맞춰 움질일 수 있는 방향에 몇가지 안이 있는지를 모두 찾아내는 부분
+	- 특정 취로 이동시키고 난 결과를 계산하는 부분
+~~~java
+public interface Puzzle(P, M) {
+	P initialPosition();
+	boolean isGoal(P position);
+	Set<M> legalMoves(P position);
+	P move(P position, M move);
+}
+~~~
+
+~~~java
+@Immutable
+public class Node<P, M> {
+    final P pos;
+    final M move;
+    final Node<P, M> prev;
+
+    Node(P pos, M move, Node<P, M> prev) { ... }
+    
+    List<M> asMoveList() {
+        List<M> solution = new LinkedList<M>();
+        for(Node<P, M> n = this; n.move != null; n = n.prev) {
+            solution.add(0, n.move);
+        }
+        return solution;
+    }
+}
+~~~
+- 이동 과정을 거쳐 도착한 특정 위치를 표현하며, 해당 위치로 오게했던 이동 규칙과 바로 직전 위치를 가리키는 Node에 대한 참조를 갖고 있음
+- Node 클래스가 갖고있는 이전 Node에 대한 참조를 계속해서 따라가면 처음 시작한 이후 어떤 과정을 거쳐 현재 위치까지 오게 됐는지를 알 수 있음
+
+</br>
+
+~~~java
+public class SequentailPuzzleSolver<P, M> {
+    private final Puzzle<P, M> puzzle;
+    private final Set<P> seen = new HashSet<P>();
+    
+    public SequentailPuzzleSolver(Puzzle<P, M> puzzle) {
+        this.puzzle = puzzle;
+    }
+    
+    public List<M> solve() {
+        P pos = puzzle.initailPosition();
+        return search(new Node<P, M>(pos, null, null));
+    }
+    
+    private List<M> search(Node<P, M> node) {
+        if(!seen.contains(node.pos)) {
+            seen.add(node.pos);
+            if(puzzle.isGoal(node.pos)) {
+                return node.asMoveList();
+            }
+            
+            for(M move : puzzle.legalMoves(node.pos)) {
+                P pos = puzzle.move(node.pos, move);
+                Node<P, M> child = new Node<P, M> (pos, move, node); 
+                List<M> result = search(child);
+                if(result != null) {
+                    return  result; 
+                }
+            }
+        }
+        return null;
+    }
+}
+~~~
+- SequentailPuzzleSolver 클래스는 순차적인 방법으로 퍼즐을 해결하는 프로그램
+- 퍼즐의 게임 공간을 깊이 우선 탐색 방법으로 돌아보도록 되어 있으며, 전체 게임 공간을 탐색하다가 원하는 답을 찾으면 멈춤
+- 병렬화 할 수 있느 ㄴ부분을 찾아 최대한 활용한다면 다음 이동할 위치를 계산하고 목표 조건에 이르렀는지 계산하는 부분을 병렬로 실행시킬 수 있을 것
+
+</br>
+
+~~~java
+public class ConcurrentPuzzleSolver<P, M> {
+    private final Puzzle<P, M> puzzle;
+    private final ExecutorService exec;
+    private final ConcurrentHashMap<P, Boolean> seen; 
+    final ValueLatch<Node<P, M>> solution = new ValueLatch<Node<P, M>>();
+
+    ...
+    
+    public List<M> solve() throws InterruptedException {
+        try {
+            P p = puzzle.initailPosition();
+            exec.execute(newTask(p, null, null));
+            // 최종 결과를 찾을 때까지 대기
+            Node<P, M> solnNode = solution.getValue();
+            return (solnNode == null) ? null : solnNode.asMoveList();
+        } finally {
+            exec.shutdown();
+        }
+    }
+    
+    protected Runnable newTask(P p, M m, Node<P, M> n) {
+        return new SolverTask(p, m, n);
+    }
+    
+    class SolverTask extends Node<P, M> implements Runnable {
+    	...
+=
+        public void run() {
+            if(solution.isSet() || seen.putIfAbsent(pos, true) != null) {
+                return; // 최종 결과를 구했거나 해당 위치를 이미 탐색했던 경우
+            }
+            
+            if(puzzle.isGoal(pos)) { 
+                solution.setValue(this);
+            } else {
+                for(M m : puzzle.legalMoves(pos)) { 
+                    exec.execute(newTask(puzzle.move(pos, m), m, this));  
+                }
+            }
+        }
+    }
+}
+~~~
+- ConcurrentPuzzleSolver 클래스는 Node 클래스를 상속받고 Runnable 인터페이스를 구현한 SolverTask라는 내부 클래스를 사용함
+- ConcurrentPuzzleSolver 클래스에서는 Set 대신 ConcurrentHashMap을 사용
+	- 컬렉션 내부 정보에 대해 스레드 안전성 호가보
+	- putIfAbsent와 같은 단일 연산 메소드를 사용해 여러 스레드에서 같은 이름으로 값을 저장하려 할 때 발생할 수 있는 경쟁 상황을 예방함
+- ConcurrentPuzzleSolver 클래스는 검색 상태를 호출 스택에 보관하는 대신 스레드 풀 내부의 작업 큐를 사용함 
+
+</br>
+
+- 목표한 결과에 도달했을 떄 더이상 탐색하지 않고 프로그램을 종료시키려면 동작중인 스레드 가운데 아직 목표한 지점에 도달하지 못한 스레드가 있는지 알아낼 방법이 필요함
+- 여러 스레드에서 찾아낸 첫번째 해결 방법을 결과로 채택한다고 하면, 아직 어느 스레드에서도 결과를 찾지 못했는지를 알 수 있어야함
+- 최종 결과와 관련된 이런 조건을 처리하기에 적절한 방법은 래치(latch)
+~~~java
+@ThreadSafe
+public class ValueLatch<T> {
+    @GuardedBy("this") private T value = null;
+    private final CountDownLatch done = new CountDownLatch(1);
+
+    public boolean isSet() {
+        return (done.getCount() == 0);
+    }
+
+    public synchronized void setValue(T newValue) {
+        if(!isSet()) {
+            value = newValue;
+            done.countDown();
+        }
+    }
+
+    public T getValue() throws InterruptedException { 
+        done.await(); 
+        synchronized (this) {
+            return value;
+        }
+    }
+}
+~~~
+- CountDownLatch를 사용해 퍼즐 프로그램에서 필요로하는 래치 기능을 구현함
+- 락을 적절히 활용하여 결과를 단 한번만 설정할 수 있도록 되어 있음
+- 최종 결과를 가장 먼저 찾아낸 스레드는 Executor를 종료시켜 더 이상의 작업이 등록되지 않도록 막음
+- 등록된 작업을 바로 제거하는 기능의 클래스를 RejectedExecutionHandler로 등록하면 RejectedExecutionException을 따로 처리할 필ㅇ가 없도록 할 수 있음
+
+</br>
+
+- 풀고자 하는 퍼즐에 해당이 없을 경우 제대로 대처하지 못함
+- 가능한 모든 이동 방법을 모두 탐색하고 확인해봐도 원하는 결과를 얻지 못한 경우에는 solve 메소드가 getSolution 메소드를 호출한 부분에서 계속해서 대기하게 됨
+~~~java
+public class PuzzleSolver<P, M> extends ConcurrentPuzzleSolver<P, M> {
+    public PuzzleSolver(Puzzle<P, M> puzzle, ExecutorService exec, ConcurrentHashMap<P, Boolean> seen) {
+        super(puzzle, exec, seen);
+    }
+    
+    private final AtomicInteger taskCount = new AtomicInteger(0);
+    
+    protected Runnable newTask(P p, M m, Node<P, M> n) {
+        return new CountingSolverTask(p, m, n);
+    }
+    
+    class CountingSolverTask extends SolverTask {
+        CountingSolverTask(P pos, M move, Node<P, M> prev) {
+            super(pos, move, prev);
+            taskCount.incrementAndGet();
+        }
+
+        @Override
+        public void run() {
+            try {
+                super.run();
+            } finally {
+                if(taskCount.decrementAndGet() == 0) {
+                    solution.setValue(null);
+                }
+            }
+        }
+    }
+}
+~~~
+- 병렬 프로그램이 원하는 결과를 얻지 못했을 때 종료시키려면 작업을 실행하고 있느 ㄴ스레드의 개수를 세고 있다가 더이상 아무 작업을 하지 않는 시점이 됐을 때 결과값으로 null을 설정하는 방법도 사용해볼만 함
+- 퍼즐 프로그램에 몇가지 추가적인 종료 조건을 넣어두고 효과를 볼 수 있음
+	- 시간 제한 기능
+	- 일정 횟수까지만 이동할 수 있다는 등의 제약을 두는 것
+	- 프로그램이 언제든지 작업을 중단할 수 있도록 준비해두고, 클라이언트 측에서 원하는 시점에 중단 요청을 보내도록 하는 것
+- 시간 제한 기능은 ValueLatch 클래스의 getValue 메소드에 제한 시간을 넘겨주도록 바꿔볼 수 있음
+
+</br>
+
+## 요약
+- Executor 프레임웍은 작업을 병렬로 동작시킬 수 있는 강력함과 유연성을 고루 갖추고 있음
+- 스레드를 생성하거나 제거하는 정책이나 큐에 쌓인 작업을 처리하는 방법, 작업이 밀려있을 때 밀린 작업을 처리하는 방법 등의 조건을 설정해 입맛에 맞게 튜닝할 수 있는 옵션도 제공
+- 여러가지 훅 메소드를 사용해 필요한 기능을 확장해 사용할 수도 있음
+- 특정 종료의 작업은 일정한 실행 정책 아래서만 제대로 동작하기도 하고, 특이한 조합을 사용하면 예측할 수 없는 이상한 형태로 작업이 실행되기도 한다는 점을 주의해야 함
