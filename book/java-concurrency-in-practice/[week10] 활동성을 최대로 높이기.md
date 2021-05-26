@@ -22,6 +22,8 @@
 - 데드락이 걸린 상태에서 애플리케이션을 정상적인 상태로 되돌릴 수 있는 방법은 애플리케이션을 종료하고 다시 실행하는 것 밖에 없음
 - 데드락은 상용 서비스를 시작하고 나서 시스템에 부하가 걸리는 경우와 같이 항상 최악의 상황에서 드러나곤 함
 
+</br>
+
 ### 10.1.1 락 순서에 의한 데드락
 ~~~java
 // 데드락 위험!
@@ -165,3 +167,156 @@ public class DemonstratedDeadlock {
 }
 ~~~
 - 일반적으로 데드락에 금방 빠지는 반복문의 예제
+
+### 10.1.3 객체 간의 데드락
+~~~java
+// 데드락 위험!
+class Taxi {
+    @GuardedBy("this") private Point location, destination; 
+    private final Dispatcher dispatcher; 
+    
+    public Taxi(Dispatcher dispatcher) {
+        this.dispatcher = dispatcher;
+    }
+    
+    public synchronized Point getLocation() {
+        return location;
+    }
+    
+    public synchronized void setLocation(Point location) {
+        this.location = location;
+        if(location.equals(destination))
+            dispatcher.notifyAvailable(this);
+    }
+}
+
+class Dispatcher {
+    @GuardedBy("this") private final Set<Taxi> taxis;
+    @GuardedBy("this") private final Set<Taxi> availableTaxis;
+    
+    public Dispatcher() {
+        taxis = new HashSet<Taxi>();
+        availableTaxis = new HashSet<Taxi>();
+    }
+    
+    public synchronized void notifyAvailable(Taxi taxi) {
+        availableTaxis.add(taxi);
+    }
+    
+    public synchronized Image getImage() {
+        Image image = new Image();
+        for(Taxi t :taxis)
+            image.drawMarker(t.location);
+        return image;
+    }
+}
+~~~
+- Taxi 클래스 : 현재 위치와 이동 중인 목적지를 속성으로 갖는 개별 택시를 의미
+- Dispatcher 클래스 : 한 무리의 택시를 의미
+- 두 개의 락을 모두 사용해야하는 메소드는 하나도 없음에도 불구하고 setLocation 메소드와 getImage 메소드를 호출하는 클래스는 두 개의 락을 사용하는 셈이 됨
+- setLocation() 과 notifyAvailable() 은 모두 synchronized 로 묶여 있기 때문에 setLocation()을 호출하는 클래스는 Taxi에 대한 락을 확보하는 셈이고, 다음으로 Dispatcher 락을 확보함
+- getImage() 를 호출하는 스레드 역시 Dispatcher 락을 확보하고, 다음으로 Taxi 락을 화보함
+- 두 개의 스레드에서 두개의 락을 서로 다른 순서로 가져가려는 상황, 즉 데드락이 발생하게 됨
+- 락을 확보한 상태에서 에일리언 메소드를 호출하는지 확인하면 데드락이 발생하는 부분을 찾아내는데 도움이 됨
+- 락을 확보한 상태에서 에일리언 메소드를 호출한다면 가용성에 문제가 생길 수 있음
+- 에일리언 메소드 내부에서 다른 락을 확보하려고 하거나, 아니면 예상하지 못한 만큼 오랜 시간 동안 계속해서 실행된다면 호출하기 전에 확보했던 락이 필요한 다른 스레드가 계속해서 대기해야 하는 경우도 생길 수 있음
+
+### 10.1.4 오픈 호출
+- 데드락이 발생한 상황에서 자신 각자가 데드락의 원인이라는 사실을 알지 못하며, 알지 못해야만 함
+	- 메소드 호출이라는 것이 그 너머에서 어떤 일이 일어나는지 모르게 막아주는 추상화 방법이기 때문
+- 특정 락을 확보한 상태에서 에일리언 메소드를 호출한다는 건 파급 효과를 분석하기가 굉장히 어렵고, 따라서 위험도가 높은 일임
+- 락을 전혀 확보하지 않은 상태에서 메소드를 호출하는 것을 오픈 호출(open call)이라고 함
+- 메소드를 호출하는 부분이 모두 오픈 호출로만 이뤄진 클래스는 락을 확보한 채로 메소드를 호출하는 클래스보다 훨씬 안정적이며 다른 곳에서 불러다 쓰기도 좋음
+- 데드락을 미연에 방지하고자 오픈 호출을 사용하는 것은 스레드 안전성을 확보하기 위해 캡슐화 기법(encapsulation)을 사용하는 것과 비슷하다고 볼 수 있음
+- 활동성이 확실한지를 분석하는 경우에도 오픈 호출 기법을 적용한 프로그램이라면 그렇지 않은 프로그램보다 분석 작업이 훨씬 간편함
+- Taxi 와 Dispatcher 클래스는 오픈 호출을 사용하도록 쉽게 리팩토링 할 수 있으며, 그 결과로 데드락을 막을 수 있음
+~~~java
+@ThreadSafe
+class Taxi {
+    @GuardedBy("this") private Point location, destination;
+    private final Dispatcher dispatcher;
+
+    ...
+
+    public synchronized Point getLocation() {
+        return location;
+    }
+
+    public void setLocation(Point location) {
+        boolean reachedDestination;
+        synchronized (this) {
+            this.location = location;
+            reachedDestination = location.equals(destination);
+        }
+        if(reachedDestination)
+            dispatcher.notifyAvailable(this);
+    }
+}
+
+@ThreadSafe
+class Dispatcher {
+    @GuardedBy("this") private final Set<Taxi> taxis;
+    @GuardedBy("this") private final Set<Taxi> availableTaxis;
+
+    ...
+
+    public synchronized void notifyAvailable(Taxi taxi) {
+        availableTaxis.add(taxi);
+    }
+
+    public Image getImage() {
+        Set<Taxi> copy;
+        synchronized (this) {
+            copy = new HashSet<Taxi>(taxis);
+        }
+        Image image = new Image();
+        for(Taxi t :copy)
+            image.drawMarker(t.location);
+        return image;
+    }
+}
+~~~
+- synchronized 블록의 범위를 최대한 줄여 공유되 ㄴ상태 변수가 직접 관련된 부분에서만 락을 확보하도록 함
+- 객체 간의 데드락 방지를 위해 오픈 호출을 사용
+- Taxi 첫번째 예제는 습관적으로 메소드 전체에 synchronized 구문으로 동기화를 걸어주는 것이 원인일 수 있음
+- 프로그램을 작성할 때 최대한 오픈 호출 방법을 사용하도록 함
+- 내부의 모든 부분에서 오픈 호출을 사용하는 프로그램은 락을 확보한 상태로 메소드를 호출하곤 하는 프로그램보다 데드락 문제를 찾아내기 위한 분석 작업을 훨씬 간편하게 해줌
+- synchronized 블록의 구조를 변경해 오픈 호출 방법을 사용하도록 하면 원래 단일 연산으로 실행되던 코드를 여러 개로 쪼개 실행하기 때문에 예상치 못한 상황에 빠지기도 함
+- 연산의 단일성을 잃는다는 것이 일부 상황에서는 큰 문제가 되기도하며, 연산의 단일성을 확보하는 방법에는 오픈 호출된 이후에 실행될 코드가 한 번에 하나씩만 실행되도록 객체의 구조를 정의할 수 있음
+	- 서비스를 종료하고자 할 때, 현재 실행작업이 끝나기를 대기 -> 완료 후 서비스에서 사용하던 자원 반납의 순서를 밟음
+	- 서비스 상태를 "종료중" 이라고 설정할 동안만 락을 확보하고, 다른 스레드가 새로운 작업을 시작하거나 종료 절차를 시작하지 못하도록 미리 예방하는 방법이 존재
+	- 코드 가운데 크리티컬 섹션(critical section)에 다른 스레드가 들어오지 못하도록 하기 위해 락을 사용하는 대신 이와같이 스레드 간의 약속을 정해 다른 스레드가 작업을 방해하지 않도록 하는 방법이 존재함
+
+
+### 10.1.5 리소스 데드락
+- 필요한 자원을 사용하기 위해 대기하는 과정에도 데드락이 발생할 수 있음
+	- A 스레드는 데이터베이스 D1에 대한 연결을 확보한 상태에서 데이터베이스 D2에 대한 연결을 확보하고자 하고, B 스레드는 데이터베이스 D2에 대한 연결을 확보한 상태에서 데이터베이스 D1을 확보하고자 하는 상황
+- 자원과 관련해 발생할 수 있는 또 다른 데드락 상황은 스레드 부족 데드락(thread starvation deadlock)
+	- 단일 스레드로 동작하는 Executor에서 현재 실행 중인 작업이 또 다른 작업을 큐에 쌓고는 그 작업이 끝날 때까지 대기하는 데드락 상황
+	- - 다른 작업의 실행 결과를 사용해야만 하는 작업이 있다면 스레드 소모성 데드락의 원인이 되기 쉬움
+- 크기가 제한된 풀과 다른 작업과 연동돼 동작하는 작업은 잘못 사용하면 이와 같은 문제를 일으킬 수 있음
+
+</br>
+
+## 10.2 데드락 방지 및 원인 추적
+- 한번에 하나 이상의 락을 사용하지 않는 프로그램은 락의 순서에 의한 데드닭이 발생하지 않음
+- 여러 개의 락을 사용해야만 한다면 락을 사용하는 순서 역시 설계 단계부터 고려해야 함
+	- 설계 과정에서 여러 개의 락이 서로 함께 동작하는 부분을 최대한 줄이고, 락의 순서를 지정하는 규칙을 정해 문서로 남겨 규칙을 정확하게 따라 프로그램을 작성해야 함
+- 두 단계 전략으로 데드락 발생 가능성이 없는지를 확인해야 함
+	- 첫번째 단계 : 여러 개의 락을 확보해야하는 부분이 어디인지를 찾아내는 단계
+	- 두번째 단계 : 첫번째 단계에서 찾은 부분에 대한 전반적인 분석 작업을 진행해 프로그램 어디에서건 락을 지정된 순서에 맞춰 사용하도록 함
+
+</br>
+
+### 10.2.1 락의 시간 제한
+- 데드락 상태를 검출하고 데드락에서 복구하는 또 다른 방법은 Lock 클래스의 메소드 가운데 시간을 제한할 수 있는 tryLock 메소드를 사용하는 방법
+	- synchonized 암묵적인 락은 락을 확보할 때까지 영원히 기다림
+	- Lock 클래스 등의 명시적인 락은 일정시간을 정해두고 락을 확보하지 못하면 tryLock 메소드가 오휴를 발생시키도록 할 수 있음
+	- 락을 확보하는데 걸릴 것이라고 예상하는 시간보다 훨씬 큰 값을 타임아웃으로 지정하고 tryLock을 호출하면, 일반적이지 않은 상황 발생 시 제어권을 되돌려 받을 수 있음
+- 지정한 시간이 되도록 락을 확보하지 못해도, 락을 왜 확보하지 못했는지는 몰라도 됨
+- 명시적인 락을 사용하면 락을 화보하려고 했지만 실패했다는 사실을 기록해 둘 기회는 갖는 셈이고, 그동안 발생했던 내용을 로그로 남길 수 있음
+	- 프로그램 전체 재시작 대신, 프로그램 내부에서 필요한 작업을 재시도하도록 할 수도 있음
+- 여러개의 락을 확보할 때 이와 같이 타임아웃을 지정하는 방법을 적용하면, 프로그램 전체에서 모두 타임아웃을 사용하지 않는다 해도 데드락을 방지하는데 효과를 볼 수 있음
+
+
+### 10.2.2 스레드 덤프를 활용한 데드락 분석
