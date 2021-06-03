@@ -221,4 +221,114 @@ public class BetterAttributeStore {
 - synchronized 블록에서 동기화를 맞추는 데도 자원이 필요하기 때문에 하나의 synchronized 블록을 두개 이상으로 쪼개는 일도 어느 한도를 넘어서면 성능의 측면에서 악영향을 미칠 수 있음
 
 ### 11.4.2 락 정밀도 높이기
-- 
+- 락 점유 시간을 줄이고, 락 확보를 위함 경쟁하는 시간을 줄일 수 있는 또 다른 방법으로는 스레드에서 해당 락을 덜 사용하도록 변경하는 방법이 있음
+	- 락 분할과 락 스트라이핑 방법이 존재
+	- 하나의 락으로 여러개의 상태 변수를 한번에 묶어두지 않고, 서로 다른 락을 사용해 여러 개의 독립적인 상태 변수를 각자 묶어두는 방법
+	- 락으로 묶이는 프로그램의 범위를 조밀하게 나누는 효과가 있으며, 확장성이 높아지는 결과를 얻을 수 있음
+	- 락의 개수가 많아질수록 데드락이 발생할 위험도 높아짐
+- 락이 두개 이상의 독립적인 상태 변수를 한번에 묶어서 동기화하고 있다면 해당하는 코드 블록을 상태 변수에 맞춰 두 개 이상의 락으로 동기화하도록 분할해 확장성을 높일 수 있음
+~~~java
+@ThreadSafe
+public class ServerStatus {
+    @GuardedBy("this") public final Set<String> users; 
+    @GuardedBy("this") public final Set<String> queries; 
+
+    public ServerStatus(Set<String> users, Set<String> queries) {
+        this.users = users;
+        this.queries = queries;
+    }
+    
+    public synchronized void addUser(String u) {users.add(u);}
+    public synchronized void addQuery(String q) {queries.add(q);} 
+    public synchronized void removeUser(String u) {users.remove(u);}
+    public synchronized void removeQuery(String q) {users.remove(q);}
+}
+~~~
+- 사용자 정보와 실행 중인 쿼리 정보는 완전히 독립적인 정보
+- 기능에 문제가 생기지 않는 범위에서 두개의 클래스로 분리해 구현할 수 있음
+
+~~~java
+@ThreadSafe
+public class ServerStatus {
+    @GuardedBy("this") public final Set<String> users;
+    @GuardedBy("this") public final Set<String> queries;
+    ...
+    public void addUser(String u) {
+        synchronized (users) {
+            users.add(u);
+        }
+    }
+
+    public synchronized void addQuery(String q) {
+        synchronized (queries) {
+            queries.add(q);
+        }
+    }
+    
+    // remove 메소드 역시 락을 분할시켜 만들 수 있다.
+}
+~~~
+- 락을 분할하여 락의 정밀도가 높아짐
+- 대기 상태에 들어가는 경우가 크게 줄어듦
+- 어느 정도의 경쟁이 발생하는 상황에서 락을 두개 이상으로 분할하면 대부분의 동기화 블록에서 락 경쟁이 일어나지 않도록 할 수 있으며, 처리량과 확장성의 측면에서 이득을 얻을 수 있음
+
+
+### 11.4.3 락 스트라이핑
+- 락 스트라이핑은 독립적인 객체를 여러 가지 크기의 단위로 묶어내고, 묶인 블록 단위로 락을 나누는 방법을 말함
+- ConcurrentHashMap 클래스는 16개의 락을 배열에 담고, 16개의 락 각자가 전체 해시 범위의 1/16에 대한 락을 담당
+	- 락 경쟁이 발생할 확률을 1/16로 낮춰줌
+	- ConcurrentHashMap 은 최대 16개의 스레드에서 경쟁 없이 동시에 맵에 들어있는 데이터를 사용할 수 있도록 구현되어 있는셈
+- 여러 개의 락을 사용하도록 쪼개놓은 컬렉션 전체를 한꺼번에 독점적으로 사용해야하는 경우에는 단일 락을 사용할 때보다 동기화시키기가 어렵고 자원도 많이 소모한다는 단점이 있음
+~~~java
+@ThreadSafe
+public class StripeMap {
+    // 동기화 정책 : bucket[n]은 locks[n%N_LOCKS]락으로 동기화한다.
+    private static final int N_LOCKS = 16;
+    private final Node[] buckets;
+    private final Object[] locks;
+    
+    private static class Node{ ... }
+    
+    public StripeMap(int numBuckets) {
+        buckets = new Node[numBuckets];
+        locks = new Object[N_LOCKS];
+        for(int i=0; i < N_LOCKS; i++) 
+        	locks[i] = new Object();
+    }
+    
+    private final int hash(Object key) {
+        return Math.abs(key.hashCode() % buckets.length);
+    }
+    
+    public Object get(Object key) {
+        int hash = hash(key);
+        synchronized (locks[hash % N_LOCKS]) {
+            for(Node m = buckets[hash]; m != null ; m = m.next) {
+                if(m.key.equals(key)) {
+                    return m.value;
+                }
+            }
+        }
+        return null;
+    }
+    
+    public void clear() {
+        for(int i = 0; i < buckets.length; i++) {
+            synchronized (locks[i % N_LOCKS]) {
+                buckets[i] = null;
+            }
+        }
+    }
+    ...
+}
+~~~
+- 락 스트라이핑을 사용하는 해시 기반의 맵 클래스
+- N_LOCKS 만큼의 락을 생성하고, 락이 각자의 범위에 해당하는 해시 공간에 대한 동기화를 담당
+- 대부분의 메소드는 N_LOCKS 개의 락 가운데 하나만 확보하는 것으로 충분함
+
+### 11.4.4 핫 필드 최소화
+- 자주 계산하고 사용하는 값을 캐시에 저장해 두도록 최적화한다면 확장성을 떨어뜨릴 수 밖에 없는 핫 필드(hot fields) 가 나타남
+- HashMap 에서 락 스트라이핑을 사용해 락을 분할하여 확장성을 향상시킬 수 있지만 데이터를 넣고 뺄 때마다 size 메소드에서 사용하는 값을 매번 변경해야 한다면 해당 값을 변경하느라 경쟁이 발생하게 됨
+- 모든 연산을 수행할 때마다 한번씩 사용해야 하는 카운터 변수와 같은 부분을 핫 필드라고 함
+- ConcurrentHashMap 은 락으로 분할된 부분마다 카운트 변수를 두어 size 메소드 호출시에는 모든 카운트 변수를 더해 돌려줌
+
