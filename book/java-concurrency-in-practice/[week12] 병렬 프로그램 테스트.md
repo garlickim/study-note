@@ -313,4 +313,160 @@ public void testPoolExpansion() throws InterruptedException  {
 
 
 ### 12.1.6 스레드 교차 실행량 확대
-- 
+- CPU 프로세서의 개수, 운영체제, 프로세서 아키텍처 등을 다양하게 변경하면서 테스트해보면 특정 시스템에서만 발생하는 오류를 찾아낼 수 있음
+- 스레드 교차 실행 정도를 크게 높이고, 테스트할 대상 공간을 크게 확대 시킬 수 있는 트릭은 공유된 자원을 사용하는 부분에서 Thread.yield 메소드를 호출해 컨텍스트 스위치가 많이 발생하도록 유도할 수 있음
+~~~java
+public synchronized void transferCredis(Account from, Account to, int amount) {
+    from.setBalance(from.getBalance - amount);
+    if(random.nextInt(1000) > THREADHOLD) {
+        Thread.yield();
+    }
+    to.setBalance(to.getBalance + amount);
+}
+~~~
+- 작업 도중 Thread.yield 메소드를 호출해주면 공유된 데이터를 사용할 때 적절한 동기화 방법을 사용하지 않은 경우 특정한 타이밍에 발생할 수 있는 버그가 노출되는 가능성을 높일 수 있음
+
+</br>
+
+## 12.2 성능 테스트
+- 성능 테스트는 특정한 사용 환경 시나리오를 정해두고, 해당 시나리오를 통과하는데 얼마만큼의 시간이 걸리는지를 측정하고자 하는데 목적이 있음
+- 성능 테스트의 두번째 목적은 성능과 관련된 스레드의 개수, 버퍼의 크기 등과 같은 각종 수치를 뽑아내고자 함
+
+</br>
+
+### 12.2.1 PutTakeTest에 시간 측정 부분 추가
+- 단일 연산을 굉장히 많이 실행하여 전체 실행 시간을 구한 다음 실행했던 연산의 개수로 나누고, 단일 연산을 실행하는 데 걸린 평균 시간을 찾는 방법이 정확함
+~~~java
+public class BarrierTimer implements Runnable{
+    private boolean started;
+    private long startTime, endTime;
+    
+    @Override
+    public synchronized void run() {
+        long t = System.nanoTime();
+        if(!started) {
+            started = true;
+            startTime = t;
+        } else 
+            endTime = t;
+    }
+    
+    public synchronized void clear() {
+        started = false;
+    }
+    
+    public synchronized long getTime() {
+        return endTime - startTime;
+    }
+}
+~~~
+- 배리어(barrier)가 적용되는 부분에서 시작 시간과 종료 시간을 측정할 수 있도록 기존 클래스를 확장할 수 있음
+- 시간 측정 기능을 갖고 있는 배리어 액션을 사용하도록 하려면 CyclicBarrier를 초기화 하는 부분에 원하는 배리어 액션을 지정함
+~~~java
+this.timer = new BarrierTimer();
+this.barrier = new CyclicBarrier(npairs * 2 + 1, timer);
+~~~
+
+</br>
+
+~~~java
+public void test() {
+    try {
+        timer.clear();
+        for(int i = 0; i < nPairs; i++) {
+            pool.execute(new Producer());
+            pool.execute(new Consumer());
+        }
+        barrier.await();
+        barrier.await();
+        long nsPerItem = timer.getTime() / (nPairs * (long) nTrials);
+        System.out.println("Throughput : " + nsPerItem + " ns/item");
+        assertEquals(putSum.get(), takeSum.get());
+    } catch (Exception e) {
+        throw new RuntimeException(e);
+    }
+}
+~~~
+- 베리어 기반의 타이머를 사용하도록 변경한 메소드
+
+</br>
+
+~~~java
+public static void main(String[] args) throws Exception {
+    int tpt = 100000; // 스레드별 실행 횟수
+    for(int cap = 1; cap <= 1000; cap *= 10) {
+        System.out.println("Capacity : " + cap);
+        for(int pairs = 1;  pairs <= 128; pairs *= 2) {
+            TimedPutTakeTest t = new TimedPutTakeTest(cap, pairs, tpt);
+            System.out.print("Pairs: "+ pairs + "\t");
+            t.test();
+            System.out.print("\t");
+            Thread.sleep(1000);
+            t.test();
+            System.out.println();
+            Thread.sleep(1000);
+        }
+    }
+    pool.shutdown();
+}  
+~~~
+- 버퍼의 크기를 얼마로 제한해야 최고 성능을 알아내는지 알아보기 위해, 여러가지 인자에 다양한 값을 설정하면서 테스트 프로그램을 실행해봐야 함
+- 위와 같은 테스트 실행 프로그램을 사용하면 편리함
+
+![timedPutTakeTest01](/img/timedPutTakeTest01.png)     
+  
+- CPU가 4개 장착된 하드웨어서 버퍼의 크기를 1, 10, 100, 1000으로 변경하면서 실행한 결과
+- 버퍼 크기가 1인 경우, 각 스레드가 대기 상태에 들어가고 나오면서 아주 적은 양의 작업밖에 할 수 없기 때문에 성능이 떨어지는 것은 당연
+- 10을 넘는 크기를 지정하면 버퍼의 크기에 비해 성능이 향상되는 정도가 떨어지는 것을 볼 수 있음
+- 스레드가 많이 실행되고 있더라도, 실제 작업을 하는 양은 많지 않고 스레드가 대기 상대에 들어갔다 나왔다하는 동기화를 맞추느라 CPU 용량의 대부분을 사용하기 때문
+- 프로듀서-컨슈머 패턴으로 움직이는 애플리케이션을 생각한다면 항목을 생성하고 사용하는 과정에서 무시할 수 없을 만큼 상당한 양의 작업이 이뤄질 것
+	- 스레드를 너무 많이 추가했다가는 그 여파를 눈으로 확인할 수 있게 됨..
+
+
+### 12.2.2 다양한 알고리즘 비교
+- BoundedBuffer 클래스의 속도가 떨어지는 가장 큰 이유는 put,take 연산 양쪽에서 모두 스레드 경쟁을 유발할 수 있는 연산을 사용하기 때문
+	- 세마포어를 확보하거나 락을 확보하고 세마포어를 다시 해제하는 등의 연산
+![queue-perform](/img/queue-perform.png)    
+  
+- 듀얼 하이퍼스레드 CPU가 장착된 하드웨어에서 버퍼 크기가 256인 클래스 3개를 비교 실행한 결과
+- 연결 큐는 새로운 항목을 추가할 때마다 버퍼 항목을 메모리에 새로 할당 받아야하기 때문에 배열 기간의 큐보다 더 많은 일을 해야함
+- 연결 리스트 기반의 큐는 put,take 연산에 대해 배열 기반의 큐보다 병렬 처리 환경에서 훨씬 안정적으로 동작함
+	- 큐의 처음과 끝 부분에 서로 다른 스레드가 동시에 접근해 사용할 수 있기 때문
+- 메모리 할당 작업은 일반적으로 스레드 내부에 한정돼 있기 떄문에 메모리를 할당한다 해도 스레드 간의 경쟁을 줄일 수 있는 알고리즘의 확장성이 더 높을 수 밖에 없음
+
+
+### 12.2.3 응답성 측정
+- 단일 작업 처리 시간을 측정할 때는 보통 측정 값의 분산(variance)을 중요한 수치로 생각함
+	- 간혹 평균 처리 시간은 길지만 처리 시간의 분산이 작은 값을 유지하는 일이 더 중요할 수 있기 때문
+- '예측성' 역시 중요한 성능 지표 가운데 하나임을 알아야 함
+- 처리 시간에 대한 분산을 구해보면 "100밀리초 안에 작업을 끝내는 비율이 몇 % 정도인가?"와 같은 서비스 품질에 대한 수치를 결과로 제시할 수 있음
+- 서비스 시간에 대한 분산을 시각적으로 표현할 수 있는 가장 효과적인 방법은 작업을 처리하는데 걸린 시간을 히스토그램으로 그려보는 방법
+- 작업 처리 시간을 모두 더할 뿐 아니라 각 처리 시간을 목록으로 관리하고 있어야 함
+
+![timedPutTakeTest02](/img/timedPutTakeTest02.png)    
+  
+- 버퍼의 크기를 1000으로 지정하고 256개의 병렬 작업이 각각 1000개의 항목을 버퍼에 넣음
+	- 한쪽은 공정한 세마포어를 사용(회색)
+	- 다른쪽은 불공정 세마포어를 사용(흰색)
+- 불공정 세마포어를 사용한 결과는 최소 시간과 최대 시간의 차이가 80배가 넘음
+- 최소 시간과 최대 시간의 차이를 줄이기 위해 동기화 코드에 공정성을 높이면 됨
+- BoundedBuffer의 경우 세마포어를 생성할 때 공정한 모드로 초기화시켜 공정성을 높일 수 있음
+- 동기화 부분에 공정성을 높이면 처리시간의 분산 값을 줄여주는 효과가 있지만, 처리 속도가 크게 떨어지는 역효과가 나타남
+
+![timedPutTakeTest03](/img/timedPutTakeTest03.png)    
+  
+- 공정함의 문제가 평균 실행 시간을 크게 늦추거나 실행시간의 분산을 훨씬 낮게 바꿔주지 못한다는 사실이 나타남
+- 스레드가 아주 빡빡한 동기화 요구사항 때문에 계속해서 대기 상태에 들어가는 상황이 아니라면 불공정한 세마포어를 사용해 처리 속도를 크게 높일 수 있고, 반대로 공정한 세마포어를 사용해 처리 시간의 분산을 낮출 수 있음
+- 세마포어를 사용할 때에는 항상 어느 방법을 사용할 것인지 결정해야만 함
+
+</br>
+
+## 12.3 성능 측정의 함정 피하기
+- 성능을 올바르게 나타내지 못하고 잘못된 수치를 뽑아내는 잘못된 코딩 방법으로 프로그램을 작성하지 않도록 주의해야 함
+
+</br>
+
+### 12.3.1 가비지 컬렉션
+
+
+
