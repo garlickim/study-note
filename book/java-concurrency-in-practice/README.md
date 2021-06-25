@@ -16,4 +16,5 @@
 [[week8] 스레드 풀 활용](https://github.com/garlickim/study-note/blob/main/book/java-concurrency-in-practice/%5Bweek8%5D%20%EC%8A%A4%EB%A0%88%EB%93%9C%20%ED%92%80%20%ED%99%9C%EC%9A%A9.md)    
 [[week10] 활동성을 최대로 높이기](https://github.com/garlickim/study-note/blob/main/book/java-concurrency-in-practice/%5Bweek10%5D%20%ED%99%9C%EB%8F%99%EC%84%B1%EC%9D%84%20%EC%B5%9C%EB%8C%80%EB%A1%9C%20%EB%86%92%EC%9D%B4%EA%B8%B0.md)     
 [[week11] 성능, 확장성](https://github.com/garlickim/study-note/blob/main/book/java-concurrency-in-practice/%5Bweek11%5D%20%EC%84%B1%EB%8A%A5%2C%20%ED%99%95%EC%9E%A5%EC%84%B1.md)    
-[[week12] 병렬 프로그램 테스트](https://github.com/garlickim/study-note/blob/main/book/java-concurrency-in-practice/%5Bweek12%5D%20%EB%B3%91%EB%A0%AC%20%ED%94%84%EB%A1%9C%EA%B7%B8%EB%9E%A8%20%ED%85%8C%EC%8A%A4%ED%8A%B8.md)
+[[week12] 병렬 프로그램 테스트](https://github.com/garlickim/study-note/blob/main/book/java-concurrency-in-practice/%5Bweek12%5D%20%EB%B3%91%EB%A0%AC%20%ED%94%84%EB%A1%9C%EA%B7%B8%EB%9E%A8%20%ED%85%8C%EC%8A%A4%ED%8A%B8.md)     
+[[week13] 명시적인 락](https://github.com/garlickim/study-note/blob/main/book/java-concurrency-in-practice/%5Bweek13%5D%20%EB%AA%85%EC%8B%9C%EC%A0%81%EC%9D%B8%20%EB%9D%BD.md)
