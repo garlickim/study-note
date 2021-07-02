@@ -18,4 +18,4 @@
 [[week11] 성능, 확장성](https://github.com/garlickim/study-note/blob/main/book/java-concurrency-in-practice/%5Bweek11%5D%20%EC%84%B1%EB%8A%A5%2C%20%ED%99%95%EC%9E%A5%EC%84%B1.md)    
 [[week12] 병렬 프로그램 테스트](https://github.com/garlickim/study-note/blob/main/book/java-concurrency-in-practice/%5Bweek12%5D%20%EB%B3%91%EB%A0%AC%20%ED%94%84%EB%A1%9C%EA%B7%B8%EB%9E%A8%20%ED%85%8C%EC%8A%A4%ED%8A%B8.md)     
 [[week13] 명시적인 락](https://github.com/garlickim/study-note/blob/main/book/java-concurrency-in-practice/%5Bweek13%5D%20%EB%AA%85%EC%8B%9C%EC%A0%81%EC%9D%B8%20%EB%9D%BD.md)   
-[[week14] 동기화 클래스 ](https://github.com/garlickim/study-note/blob/main/book/java-concurrency-in-practice/%5Bweek14%5D%20%EB%8F%99%EA%B8%B0%ED%99%94%20%ED%81%B4%EB%9E%98%EC%8A%A4%20%EA%B5%AC%ED%98%84.md)
+[[week14] 동기화 클래스 구현](https://github.com/garlickim/study-note/blob/main/book/java-concurrency-in-practice/%5Bweek14%5D%20%EB%8F%99%EA%B8%B0%ED%99%94%20%ED%81%B4%EB%9E%98%EC%8A%A4%20%EA%B5%AC%ED%98%84.md)
