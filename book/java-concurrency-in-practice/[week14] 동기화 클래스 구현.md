@@ -411,4 +411,219 @@ public class ConditionBoundedBuffer<T> {
 </br>
 
 ## 14.4 동기화 클래스의 내부 구조
-- 
+- ReentratnLock과 Semaphore 모두 다른 여러 동기화 클래스와 같이 AbstractQueuedSynchronizer(AQS)를 상속받아 구현됨
+	- AQS는 락이나 기타 동기화 클래스를 만들 수 있는 프레임워크 역할을 하며 AQS를 기반으로 하면 엄청나게 다양한 종류의 동기화 클래스를 간단하면서 효율적으로 구현할 수 있음
+- ReentrantLock이나 Semaphore 클래스 뿐만 아니라 CountDownLatch, ReentrantReadWriteLock, SynchronousQueue, FutureTask 클래스도 AQS 기반으로 만들어져 있음
+~~~java
+// java.util.concurrent.Semaphore 클래스가 실제로 이렇게 구현되어 있지는 않다.
+@ThreadSafe
+public class SemaphoreOnLock {
+    private final Lock lock = new ReentrantLock();
+    // 조건 서술어 : permitsAvailable (permits > 0)
+    private final Condition permitsAvailable = lock.newCondition();
+    @GuardedBy("lock") private int permits;
+    
+    SemaphoreOnLock(int initialPermits) {
+        lock.lock();
+        try {
+            permits = initialPermits;
+        } finally {
+            lock.unlock();
+        }
+    }
+    
+    // 만족할떄까지 대기 : permitsAvailable
+    public void acquire() throws InterruptedException {
+        lock.lock();
+        try {
+            while (permits <= 0) 
+                permitsAvailable.await();
+            --permits;
+        } finally {
+            lock.unlock();
+        }
+    }
+    
+    public void release() {
+        lock.lock();
+        try {
+            ++permits;
+            permitsAvailable.signal();
+        } finally {
+            lock.unlock();
+        }
+    }
+}
+~~~
+- Lock을 사용해 구현한 카운팅 세마포어
+- 대기 중인 스레드를 FIFO 큐에서 관리하는 기능 등을 AQS에서 처리해줌
+- AQS를 기반으로 만들어진 개별 동기화 클래스는 스레드가 대기 상태에 들어가야 하는지 아니면 그냥 통과해야 하는지의 조건을 유연하게 정의할 수 있음
+- 동기화 클래스를 AQS 기반으로 작성하면 여러가지 장점이 존재함
+	- 동기화 클래스 하나를 기반으로 다른 동기화 클래스를 구현할 떄 여러 면에서 신경 써야하는 부분이 줄어듦
+	- 대기 상태에 들어갈 수 있는 지점이 단한군데이기 때문에 컨텍스트 스위칭 부하를 줄일 수 있으며 전체적인 성능을 높일 수 있음
+
+</br>
+
+## 14.5 AbstractQueuedSynchronizer
+- 개발자가 AQS를 직접 사용할 일은 거의 없을 것
+- AQS 기반의 동기화 클래스가 담당하는 작업 가운데 가장 기본이 되는 연산은 바로 확보(acquire)와 해제(release)
+- 확보 연산은 상태 기반으로 동작하며 항상 대기 상태에 들어갈 가능성이 있음
+	- 호출자는 항상 원하는 상태에 다다를 때까지 대기할 수 있다는 가능성을 염두해야함
+- 해제 연산은 대기 상태에 들어가지 않으며 대신 확보 연산에서 대기중인 스레드를 풀어주는 역할
+- AQS는 동기화 클래스의 상태 변수를 관리하는 작업도 어느 정도 담당하는데 getState, setState, compareAndSetState 등의 메소드를 통해 단일 int 변수 기반의 상태 정보를 관리해줌
+~~~java
+boolean acquire() throws InterruptedException {
+    while (확보 연산을 처리할 수 없는 상태이다) {
+        if(확보 연산을 처리할 때까지 대기하길 원한다) {
+            현재 스레드가 큐에 들어 있지 않다면 스레드를 큐에 넣는다
+            대기 상태에 들어간다
+        } else 
+            return 실패;
+    }
+    
+    상황에 따라 동기화 상태 업데이트
+    스레드가 큐에 들어 있었다면 큐에서 제거한다
+    return 성공;
+}
+
+void release() {
+    동기화 상태 업데이트
+    if(업데이트된 상태에서 대기 중인 스레드를 풀어줄 수 있다)
+        큐에 쌓여 있는 하나 이상의 스레드를 풀어준다
+}
+~~~
+- AQS 내부의 확보와 해제 연산의 형태
+- AQS를 구현한 동기화 클래스에 따라 다르지만 확보 연산은 ReentrantLock에서와 같이 배타적으로 동작할 수도 있고 Semaphore나 CoundDownLatch 클래스에서와 같이 배타적이지 않을 수도 있음
+- 확보 연산은 두가지 부분으로 나눠 볼 수 있음
+	- 동기화 클래스에서 확보 연산을 허용할 수 있는 상태인지 확인하는 부분
+		- 허용할 수 있는 상태면 해당 스레드는 작업을 계속 진행
+		- 허용할 수 없는 상태면 확보 연산에서 대기 상태에 들어가거나 실패
+	- 동기화 클래스 내부의 상태를 업데이트 하는 부분
+		- 특정 스레드 하나가 동기화 클래스의 확보 연산을 호출하면 다른 스레드가 해당 동기화 클래스의 확보 연산을 호출했을 때 성공할지의 여부가 달라질 수 있음
+ 		- 스레드 하나가 래치의 확보 연산을 호출했다는 것으로는 다른 스레드가 해당 래치의 확보 연산을 호출하는 결과에 영향을 주지 못하므로, 래치에 대한 확보 연산은 그 내부의 상태를 변경하지 않음
+- 배타적인 확보 기능을 제공하는 동기화 클래스는 tryAcquire, tryRelease, isHeldExclusivley 등의 메소드를 지원해야 함
+- 배타적이지 않은 확보 기능을 지원하는 클래스는 tryAcquireShared, tryReleaseShared 메소드를 제공해야 함
+- AQS에 들어있는 acquire, acquireShared, release, releaseShared 메소드는 해당 연산을 실행할 수 있는지를 확인할 때 상속받은 클래스에 들어있는 메소드 가운데 이름 앞에 try가 붙은 메소드를 호출함
+- AQS 에서는 조건 큐 기능을 지원하는 락을 간단하게 구현할 수 있도록 동기화 클래스와 연동된 조건 변수를 생성하는 방법을 제공함
+
+
+### 14.5.1 간단한 래치
+~~~java
+@ThreadSafe
+public class OneShotLatch {
+	private final Sync sync = new Sync();
+
+	public void signal() { sync.releaseShared(0); }
+
+	public void await() throws InterruptedException {
+		sync.acuireSharedInterruptibly(0);
+	}
+
+	private class Sync extends AbstractQueuedSynchronizer {
+		protected int tryAcquireShared(int ignored) {
+			// 래치가 열려있는 상태(state==1)라면 성공, 아니면 실패
+			return (getState() == 1) ? 1 : -1;
+		}
+
+		protected boolean tryReleaseShared(int ignored) {
+			setState(1); // 래치가 열렸다
+			return true; // 다른 스레드에서 확보 연산에 성공할 가능성이 있다
+		}
+	}
+}
+~~~
+- AQS를 기반으로 구현한 바이너리 래치
+- await 메소드를 호출하는 모든 스레드는 래치가 열린 상태로 넘어가기 전까지 모두 대기 상태에 들어감
+- 누군가가 signal을 호출해 해제 연산을 실행하면 그동안 await에서 대기하던 스레드가 모두 해제되고 signal 호출 이후에 await를 호출하는 스레드는 대기 상태에 들어가지 않고 바로 실행됨
+- OneShotLatch 클래스에서는 래치의 상태를 AQS 상태 변수로 표현하는데, 0이면 닫힌 상태이고 1이면 열린 상태
+- OneShotLatch 는 AQS의 핵심 기능을 위임하는 형식으로 구현했는데, 대신 AQS를 직접 상속받는 방법으로 구현하는것도 가능함
+- AQS를 직접 상속받아 구현했다면 위와 같은 예제의 단순함(메소드가 단지 2개라는 것)을 잃을 수밖에 없으며, AQS에 정의되어 있지만 사용하지 않는 메소드가 public으로 노출돼 있기 때문에 여러가지 비슷한 메소드에 혼동돼 잘못 사용할 위험이 높음
+- java.util.concurrent 패키지에 들어있는 동기화 클래스는 AQS를 private 내부 클래스로 선언해 위임 기법을 사용하고 있음
+
+</br>
+
+## 14.6 java.util.concurrent 패키지의 동기화 클래스에서 AQS 활용 모습
+
+### 14.6.1 ReentrantLock
+- ReentrantLock은 배타적인 확보 연산만 제공하기 때문에 tryAcquire, tryRelease, isHeldExclusively와 같은 메소드만 구현하고 있음
+~~~java
+protected final boolean tryAcquire(int acquires) {
+    final Thread current = Thread.currentThread();
+    int c = getState();
+    if (c == 0) {
+        if (compareAndSetState(0, 1)) {
+        	owner = current;
+            return true;
+        }
+    }
+    else if (current == owner) {
+        setState(c+1);
+        return true;
+    }
+    return false;
+}
+~~~
+- 공정하지 않은 형태로 동작하는 tryAcquire 메소드의 코드
+- ReentrantLock에서는 동기화 상태 값을 확보한 락의 개수를 확인하는데 사용하고, owner 라는 변수를 통해 락을 가져간 스레드가 어느 스레드인지도 관리함
+- tryAcquire 메소드에서는 락을 확보하려는 시도가 재진입 시도인지 아니면 최초로 락을 확보하려는 것인지 구분하기 위한 용도로 owner 변수의 내용을 사용함
+- 스레드에서 락을 확보하려고 하면 tryAcquire 메소드는 먼저 락의 상태를 확인함
+	- 락이 풀려있는 상태라면 락을 확보했다는 사실을 알릴 수 있도록 상태 값을 업데이트해봄
+- 락의 상태를 확인햇는데 이미 확보된 상태라고 판단되면, 락을 확보하고 있는 스레드가 현재 스레드인지를 확인하고 만약 그렇다면 락 확보 개수를 증가시킴
+- 락을 확보하고 있는 스레드가 현재 스레드가 아니라면 확보 시도가 실패한 것으로 처리함
+
+
+### 14.6.2 Semaphore와 CountDownLatch
+- Semaphore는 AQS의 동기화 상태를 사용해 현재 남아 있는 퍼밋의 개수를 관리함
+~~~java
+protected int tryAcquireShared(int acquires) {
+    while(true) {
+        int available = getState();
+        int remaining = available - acquires;
+        if (remaining < 0 || compareAndSetState(available, remaining))
+            return remaining;
+    }
+}
+
+protected final boolean tryReleaseShared(int releases) {
+    while(true) {
+        int p = getState();
+        if (compareAndSetState(p, p + releases))
+            return true;
+    }
+}
+~~~
+- tryAcquireShared 메소드는 현재 남아 있는 퍼밋의 개수를 알아내고, 남아 있는 퍼밋의 개수가 모자란다면 확보에 실패했다는 결과를 리턴함
+	- 반대로 충분한 개수의 퍼밋이 남아 있었다면 compareAndSetState 메소드를 사용해 단일 연산으로 퍼밋의 개수를 필요한 만큼 줄임
+	- 리턴되는 결과 값에는 성공여부와 함께 다른 스레드에서 실행하던 확보 연산을 처리할 수 있을지의 여부도 포함돼 있는데, 그렇다면 다른 스레드 역시 대기 상태에서 풀려날 수 있음
+- tryReleaseShared 메소드는 퍼밋의 개수를 증가시키며, 따라서 현재 대기 상태에 들어가 있는 스레드를 풀어줄 가능성도 있고, 성공할 때까지 상태 값 변경 연산을 재시도함
+	- 리턴 결과를 보면 해제 연산에 따라 다른 스레드가 대기 상태에서 풀려났을 가능성 여부를 알 수 있음
+- CountDownLatch 클래스도 동기화 상태 값을 현재 개수로 사용하는 세마포어와 비슷한 형태로 AQS를 활용함
+
+
+### 14.6.3 FutureTask
+- FutureTask.get 메소드는 래치 클래스와 굉장히 비슷한 기능을 갖고 있음
+	- 특정 이벤트가 발생하면 해당 스레드가 계속 진행할 수 있고, 아니면 원하는 이벤트가 발생할 때까지 스레드가 대기 상태에 들어감
+- FutureTask는 작업의 실행 상황, 즉 실행 중이거나 완료됐거나 취소되는 등의 상황을 관리하는데 AQS 내부의 동기화 상태를 활용함
+- 작업을 끝나면서 만들어낸 결과 값이나 작업에서 오류가 발생했을 때 해당하는 예외 객체를 담아둘 수 있는 추가적인 상태 변수도 갖고 있음
+- 실제 작업을 처리하고 있는 스레드에 대한 참조도 갖고 있으며, 그래야만 인터럽트 요청이 들어 왔을 때 해당 스레드에 인터럽트를 걸 수 있음
+
+
+### 14.6.4 ReentrantReadWriteLock
+- AQS 기반으로 구현된 ReentrantReadWriteLock은 AQS 하위 클래스 하나로 읽기 작업과 쓰기 작업을 모두 담당함
+- ReentrantReadWriteLock은 상태 변수의 32개 비트 가운데 16비트는 쓰기 락에 대한 개수를 관리하고 나머지는 읽기 락의 개수를 관리함
+- 읽기 락에 대한 기능은 독점적이지 않은 확보와 해제 연산으로 구현돼 있고, 쓰기 락에 대한 기능은 독점적인 확보와 해제 연산을 사용함
+- 내부적으로 AQS를 상속받은 클래스는 대기 중인 스레드의 큐를 관리하고, 스레드가 독점적인 연산을 요청했는지 아니면 독점적이지 않은 연산을 요청했는지도 관리함
+- ReentrantReadWriteLock은 락에 여유가 생겼을 때 
+	- 대기 큐의 맨 앞에 들어있는 스레드가 쓰기 락을 요청한 상태였다면 해당 스레드가 락을 독점적으로 가져감
+	- 맨 앞에 있는 스레드가 읽기 락을 요청한 상태였다면 쓰기 락을 요청한 다음 스레드가 나타나기 전까지 읽기 락을 요청하는 모든 스레드가 독점적이지 않은 락을 가져감
+
+</br>
+
+## 요약
+- 메소드 가운데 하나라도 상태 값에 따라 대기 상태에 들어갈 가능성이 있는 클래스를 작성해야 할 때 가장 좋은 방법은 Semaphore, BlockingQueue, CountDownLatch 등을 활용해 구현하는 방법
+- 제공되는 동기화에도 적절한 기능이 없다면, 암묵적인 조건 큐나 명시적인 Condition클래스 또는 AQS 클래스등을 활용해 직접 원하는 기능의 동기화 클래스를 작성할 수 있음
+- 상태 의존성을 관리하는 작업은 상태의 일관성을 유지하는 방법과 맞물려있기 때문에 암묵적인 조건 큐 역시 암묵적인 락과 굉장히 밀접하게 관련돼 있음
+- 명시적인 조건 큐인 Condition 클래스도 명시적인 Lock 클래스와 밀접하게 관련돼 있으며, 암묵적인 버전의 조건 큐나 락보다 훨씬 다양한 기능을 제공함
+	- 락 하나에서 다수의 대기 큐를 활용하거나 대기 상태에서 인터럽트에 어떻게 반응하는지를 지정하는 기능
+	- 스레드 대기 큐의 관리 방법에 대한 공정성 여부를 지정하는 기능
+	- 대기 상태에서 머무르는 시간을 제한할 수 있는 기능
