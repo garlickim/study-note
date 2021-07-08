@@ -152,4 +152,222 @@ public class CasNumberRange {
 - compareAndSet 메소드를 사용해 NumberRange와 같은 경쟁 조건이 발생하지 않게 하면서 범위를 표현하는 값 두개를 한꺼번에 변경할 수 있음
 
 ### 15.3.2 성능 비교: 락과 단일 연산 변수
+- 락과 단일 연산 변수 간의 확장성의 차이점을 확인할 수 있도록 여러 가지 방법으로 구현된 난수 발생기의 처리 속도를 비교하는 벤치 마크 테스트를 준비함
+- 난수 발생기는 항상 이전 결과 값을 내부 상태로 보존하고 있어야 함
+~~~java
+@ThreadSafe
+public class ReentrantLockPseudoRandom  extends PseudoRandom {
+    private final Lock lock = new ReentrantLock(false);
+    public int seed;
+    
+    ReentrantLockPseudoRandom(int seed) {
+        this.seed = seed;
+    }
+    
+    public int nextInt(int n) {
+        lock.lock();
+        try {
+            int s = seed;
+            seed = calculateNext(s);
+            int remainder = s % n;
+            return remainder > 0 ? remainder : remainder + n;
+        } finally {
+            lock.unlock();
+        }
+    }
+}
 
+@ThreadSafe
+public class AtomicPseudoRandom extends PseudoRandom {
+    private AtomicInteger seed;
+    
+    AtomicPseudoRandom(int seed) {
+        this.seed = new AtomicInteger(seed);
+    }
+    
+    public int nextInt(int n) {
+        while (true) {
+            int s = seed.get();
+            int nextSeed = calculateNext(s);
+            if(seed.compareAndSet(s, nextSeed)) {
+                int remainder = s % n;
+                return remainder > 0 ? remainder : remainder + n;
+            }
+        }
+    }
+}
+~~~
+- 스레드 안전한 난수 발생 함수의 코드
+	- 하나는 ReentrantLock을 사용해 구현, 하나는 AtomicInteger 사용해 구현
+- 스레드 내부의 값만을 사용해 '복잡한 작업'에 해당하는 반복 작업을 수행함
+
+![LockAndActomic](/img/LockAndActomic.png)  
+
+- 매번 반복될 때마다 각각 적은 양과 많은 양에 해당하는 작업을 처리하는 경우의 성능을 볼 수 있음
+- 스레드 내부의 데이터만으로 처리하는 작업량이 적은 경우에는 락이나 단일 연산 변수 쪽에서 상당한 경쟁 상황을 겪음
+- 스레드 내부 작업의 양이 많아지면 상대적으로 락이나 단일 연산 변수에서 경쟁 상황이 덜 벌어짐
+- 경쟁이 많은 상황에서는 단일 연산 변수보다 락이 더 빠르게 처리되고, 실제적인 경쟁 상황에서는 단일 연산 변수가 락보다 성능이 더 좋음
+- 단일 연산 변수를 사용하면 경쟁 조건에 대한 처리 작업의 책임이 경쟁하는 스레드에게 넘어감
+	- CAS 연산 기반의 알고리즘이 대부분 그렇지만 경쟁이 발생하면 그 즉시 재시도하는것으로 대응하며, 경쟁이 심할 경우 경쟁을 계속 심하게 만드는 요인이 되기도 함
+- 단일 연산 변수는 일반적인 경쟁 수준에서 경쟁 상황을 더 효율적으로 처리하기 떄문에 단일 연산 변수가 락에 비해서 확장성이 좋음
+- 경쟁이 적거나 보통 수준의 경쟁 수준에서는 단일 연산 변수를 사용해야 확장성을 높일 수 있고 경쟁 수준이 아주 높은 경우에는 락을 사용해야함
+
+</br>
+
+## 15.4 넌블로킹 알고리즘
+- 락 기반으로 동작하는 알고리즘은 항상 다양한 종류의 가용성 문제에 직면할 위험이 존재함
+- 락을 현재 확보하고 있는 스레드가 I/O 작업 때문에 대기중이라거나, 메모리 페이징 때문에 대기 중이라거나, 기타 어떤 원인 때문에라도 대기 상태에 들어간다면 다른 모든 스레드가 전부 대기 상태에 들어갈 가능성이 있음
+- 특정 스레드에서 작업이 실패하거나 또는 대기 상태에 들어가는 경우에 다른 어떤 스레드라도 그로 인해 실패 하거나 대기 상태에 들어가지 않는 알고리즘을 넌블로킹 알고리즘이라 함
+- 각 작업 단계마다 일부 스레드는 항상 작업을 진행할 수 있는 경우 락 프리 알고리즘이라고 함
+	- CAS를 독점적으로 사용할 경우 락 프리 특성과 대기상태에 빠지지 않는 특성 가지게 됨
+- 넌블로킹 알고리즘은 데드락이나 우선 순위 역전 등의 문제점이 발생하지 않음
+- 스택, 큐, 우선순위 큐, 해시 테이블 등과 같은 일반적인 데이터 구조를 구현할 때 대기 상태에 들어가지 않는 좋은 알고리즘이 많이 공개되어 있음
+
+
+### 15.4.1 넌블로킹 스택
+- 대기 상태에 들어가지 않도록 구현한 알고리즘은 락 기반으로 구현한 알고리즘에 비해 상당히 복잡한 경우가 많음
+- 넌블로킹 알고리즘을 구성할 때 가장 핵심이 되는 부분은 바로 데이터의 일관성을 유지하면서 단일 연산 변경 작업의 범위를 단 하나의 변수로 제한하는 부분임
+- 큐와 같이 연결된 구조를 갖는 컬렉션 클래스에서는 상태 전환을 개별적인 링크에 대한 변경 작업이라 간주하고, ActomicReference로 각 연결 부분을 관리해서 단일 연산으로만 변경할 수 있도록하면 어느정도 구현이 가능함
+~~~java
+@ThreadSafe
+public class ConcurrentStack <E>{
+    AtomicReference<Node<E>> top = new AtomicReference<Node<E>>();
+    
+    public void push(E item) {
+        Node<E> newHead = new Node<E>(item);
+        Node<E> oldHead;
+        do {
+            oldHead = top.get();
+            newHead.next = oldHead;
+        } while (!top.compareAndSet(oldHead, newHead));
+    }
+    
+    public E pop() {
+        Node<E> oldHead;
+        Node<E> newHead;
+        
+        do {
+            oldHead = top.get();
+            if(oldHead == null)
+                return null;
+            newHead = oldHead.next;
+        } while (!top.compareAndSet(oldHead, newHead));
+        return oldHead.item;
+    }
+    
+    private static class Node<E> {
+        public final E item;
+        public Node<E> next;
+        
+        public Node(E item) {
+            this.item = item;
+        }
+    }
+}
+~~~
+- 단일 연산 참조를 사용해 스택을 어떻게 구현하는지 보여주는 좋은 예
+- 스택 자체는 Node 클래스로 구성된 연결 리스트이며 최초 항목은 top 변수에 들어있고, 각 항목마다 자신의 값과 다음 항목에 대한 참조를 갖고 있음
+- push 메소드에서는 새로운 노드 인스턴스를 생성하고, 새 노드의 next 연결값으로 현재의 top 항목을 설정한 다음, CAS 연산을 통해 새로운 노드 스택의 top을 설정함
+- CAS 연산이 성공하거나 실패하는 어떤 경우라 해도 스택은 항상 안정적인 상태를 유지함
+- CasCounter와 ConcurrentStack 클래스는 대기 상태에 들어가지 않는 알고리즘의 여러 가지 특성을 모두 보여주고 있음
+	- 경쟁 상황이라면 재시도할 준비를 하고 있음
+- ConcurrentStack에서와 같이 대기 상태에 들어가지 않는 알고리즘은 락과 같이 compareAndSet 연산을 통해 단일 연산 특성과 가시성을 보장하기 때문에 스레드 안전성을 보장함
+- 특정 스레드에서 스택의 상태를 변경했다면 상태를 변경할 때 volatile 쓰기 특성이 있는 compareAndSet 연산을 사용해야만 함
+
+### 15.4.2 넌블로킹 연결 리스트
+- 넌블로킹 알고리즘을 작성할 때의 핵심은 바로 단일 연산의 범위를 단 하나의 변수로 제한하는 부분임
+- 연결 큐는 리스트의 머리와 꼬리 부분에 직접적으로 접근할 수 있어야 하기 때문에 스택보다 훨씬 복잡한 구조를 갖고 있음
+- 새로운 항목을 연결 큐에 추가하려면 마지막 항목을 가리키는 두 개의 참조가 동시에 단일 연산으로 변경되어야 함
+- 두 개의 참조를 업데이트 할 때 두 번의 CAS 연산이 필요한 데, 만약 첫번째 CAS연산이 성공했지만 두번째 CAS 연산이 실패했다고 하면 연결 큐가 올바르지 않은 상태에 놓이게 됨
+- 연결 큐를 대기 상태에 들어가지 않도록 구현할 수 있는 알고리즘은 두 가지 경우를 모두 처리할 수 있어야 함
+~~~java
+@ThreadSafe
+public class LinkedQueue<E> {
+    private static class Node<E> {
+        final E item;
+        final AtomicReference<Node<E>> next;
+
+        public Node(E item, Node<E> next) {
+            this.item = item;
+            this.next = new AtomicReference<Node<E>>(next);
+        }
+    }
+    
+    private final Node<E> dummy = new Node<E>(null, null);
+    private final AtomicReference<Node<E>> head = new AtomicReference<Node<E>>(dummy);
+    private final AtomicReference<Node<E>> tail = new AtomicReference<Node<E>>(dummy);
+    
+    public boolean put(E item) {
+        Node<E> newNode = new Node<E>(item, null);
+        while (true) {
+            Node<E> curTail = tail.get();
+            Node<E> tailNext = curTail.next.get();
+            if(curTail == tail.get()) {
+                if(tailNext != null) {  // A
+                    // 큐는 중간 상태이고, 꼬리 이동
+                    tail.compareAndSet(curTail, tailNext); // B
+                } else {
+                    // 평온한 상태에서 항목 추가 시도
+                    if(curTail.next.compareAndSet(null, newNode)) { // C
+                        // 추가 작업 성공, 꼬리 이동 시도
+                        tail.compareAndSet(curTail, newNode); // D
+                        return true;
+                    }
+                }
+            }
+        }
+    }
+}
+~~~
+- LinkedQueue 클래스를 보면 마이클 스콧의 넌블로킹 연결 큐 알고리즘 가운데 값을 추가하는 부분의 코드가 소개되어 있음
+- 값이 없어 비어 있는 큐는 '표식' 또는 '의미 없는' 노드만 갖고 있고, 머리와 꼬리 변수는 이와 같은 표식 노드를 참조하고 있음
+- 꼬리 변수는 항상 표식 노드, 큐의 마지막 항목, 또는 맨 뒤에서 두 번째 항목을 가리킴
+- 새로운 항목을 추가하려면 두 개의 참조를 변경해야 함
+- 현재 큐의 마지막 항목이 갖고 있는 next 참조 값을 변경해서 새로운 항목의 큐의 끝에 연결하는 작업
+- 꼬리를 가리키는 변수가 새로 추가된 항목을 가리키도록 참조를 변경하는 작업
+- 큐가 평온한 상태에 있을 때 tail 변수가 가리키는 항목의 next 값이 null을 유지하도록 하고, 반대로 중간 상태인 경우에는 tail이 가리키는 항목의 next 값이 null이 아닌 값을 갖도록 하는 전략은 위의 두가지 전략을 모두 성공적으로 구현하는 방법
+
+### 15.4.3 단일 연산 필드 업데이터
+~~~java
+public class ConcurrentLinkedQueue<E> {
+    private static class Node<E> {
+        private final E item;
+        private volatile Node<E> next;
+
+        public Node(E item) {
+            this.item = item;
+        }
+    }
+
+    private static AtomicReferenceFieldUpdater<Node, Node> nextUpdater 
+    	= AtomicReferenceFieldUpdater.newUpdater(Node.class, Node.class, "next");
+}
+~~~
+- 각 Node 인스턴스를 단일 연산 참조 클래스로 연결하는 대신 일반적인 volatile 변수를 사용해 연결하고, 연결 구조를 변경할 때는 리플렉션 기반의 AtomicReferenceFeildUpdater 클래스를 사용해 변경
+- 단일 연산 필드 업데이터 클래스는 현재 사용중인 volatile 변수에 대한 리플렉션 기반의 '뷰'를 나타내며 따라서 일반 volatile 변수에 대해 CAS 연산을 사용할 수 있도록 해줌
+- 단일 연산 필드 업데이터 클래스는 생성 메소드가 없으며, 인스턴스를 생성하려면 생성 메소드를 호출하는 대신 newUpdater라는 팩토리 메소드에 해당하는 클래스와 필드, 즉 변수의 이름을 넘겨서 생성할 수 있음
+- 업데이터 클래스에서 보장하는 단일성은 일반적인 단일 연산 변수보다 약함
+- 업데이터 클래스에 지정한 클래스의 지정 변수가 업데이터 클래스를 통하지 않고 직접 변경하는 경우가 있다면 연산의 단일성을 보장할 수 없음
+- 필드 업데이터 클래스로 지정한 변수에 대해 연산의 단일성을 보장하려면 모든 스레드에서 해당 변수의 값을 변경할 때 항상 compareAndSet 메소드나 기타 산술 연산 메소드를 사용해야만 함 
+
+
+### 15.4.4 ABA 문제
+- ABA 문제는 노드를 재사용하는 알고리즘에서 CAS연산을 고지식하게 사용하다 보면 발생할 수 있는 이상 현상을 말함
+- CAS연산은 "V 변수의 값이 여전히 A인지?"를 확인하고 만약 그렇다면 값을 B로 변경하는 작업을 말함
+- 간혹 "V 변수의 값이 내가 마지막으로 A값이라고 확인한 이후에 변경된 적이 있는지?" 라는 질문의 답을 알아야 할 경우도 생김
+- 일부 알고리즘은 V변수의 값이 A -> B -> 다시 A로 변경된 경우 변경사항이 있었다는 것으로 인식하고 그에 해당하는 재시도 절차를 밟아야 할 필요가 있기도 함
+	- ABA 문제는 연결 노드 객체에 대한 메모리 관리 부분을 직접 처리하는 알고리즘을 사용할 때 많이 발생함
+	- 해결 방법 -> 참조값 하나만 변경하는 것이 아니라, 참조와 버전 번호의 두가지 값을 한꺼번에 변경하는 방법
+- AtomicStampedReference 클래스는 
+	- 두 개의 값에 대한 조건부 단일 연산 업데이트 기능을 제공함
+	- 객체에 대한 참조와 숫자 값을 함께 변경하며, 버전 번호를 사용해 ABA 문제가 발생하지 않는 참조의 역할을 함
+- AtomicMarkableReference 클래스 역시 이와 유사하게 객체에 대한 참조와 불린 값을 변경하며 일부 알고리즘 노드 객체를 그대로 놓아두지만 삭제된 상태임을 표시하는 기능으로 활용하기도 함
+
+</br>
+
+
+## 요약
+- 대기 상태에 들어가지 않는 넌블로킹 알고리즘은 락 대신 비교 후 치환 같은 저수준의 명령을 활용해 스레드 안전성을 유지하는 알고리즘임
+- 저수준의 기능은 특별하게 만들어진 단일 연산 클래스를 통해 사용할 수 있으며, 단일 연산 클래스는 '더 나은 volatile 변수'로써 정수형 변수나 객체에 대한 참조 등을 대상으로 단일 연산 기능을 제공하기도 함
+- 넌블로킹 알고리즘은 설계하고 구현하기는 훨씬 어렵지만 특정 조건에서는 훨씬 나은 확장성을 제공하기도 하고, 가용성 문제를 발생시키지 않는다는 장점이 있음
+- JVM이나 플랫폼 라이브러리 대기 상태에 들어가지 않는 알고리즘을 적절히 활용하는 범위가 넓어지면서 JVM의 버전이 올라갈 때마다 병렬 프로그램의 성능이 좋아지고 있음
