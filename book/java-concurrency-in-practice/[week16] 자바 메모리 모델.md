@@ -113,6 +113,208 @@ volatile 규칙
 
 
 ### 16.1.4 동기화 피기백
-- 
+- 코드의 실행 순서를 정하는 면에서 미리 발생 규칙이 갖고 있는 능력의 수준 때문에 현재 사용중인 동기화 기법의 가시성에 얹혀가는 방법, 즉 피기백하는 방법도 있음
+- 즉, 락으로 보호대 있지 않은 변수에 접근해 사용하는 순서를 정의할 때, 모니터 락이나 volitile 변수 규칙과 같은 여러 가지 순서 규칙에 미리 발생 규칙을 함께 적용해 순서를 정의하는 방법을 말함
+	- 명령이 나열된 순서에 굉장히 민감하며 따라서 오류가 발생하기 쉬움
+	- ReentrantLock과 같이 성능에 중요한 영향을 미치는 클래스에서 성능을 떨어뜨릴 수 있는 아주 작은 요인까지 완벽하게 제거해야 하는 상황이 오기 전까지는 사용하지 않는 편이 좋음
+- AQS는 FutureTask가 맡은 작업의 진행 상태, 즉 실행 중, 완료, 취소 등의 여부를 정수형으로 보관한다.
+FutureTask는 작업의 상태 외에도 완료된 작업의 결과 값 등을 보관함
+- 한쪽 스레드에서 set 메소드를 사용해 실행한 결과를 보관하고 다른 스레드에서는 get 메소드를 호출해 결과 값을 가져가려고 한다고 가정해보면, set과 get 작업은 미리 발생 규칙으로 그 순서를 정의할 수 있음
+	- 결과 값을 보관하는 변수를 volatile로 선언하는 것으로도 원하는 결과를 얻을 수 있겠지만, 기존의 동기화 방법을 잘 활용하면 훨씬 적은 자원으로 동일한 효과를 얻을 수 있다.
+- FutureTask는 미리 발생 규칙에 따라 tryReleasedShared 메소드의 작업이 tryAcquireShared 메소드보다 항상 먼저 실행되도록, 즉 tryReleasedShared 메소드에서 항상 tryAcquireShared 메소드가 읽어가는 변수에 쓰는 방법으로 세심하게 구현되어 있음
+~~~java
+private final class Sync extends AbstractQueuedSynchronizer {
+    private static final int RUNNING = 1, RAN = 2, CANCELLED = 4;
+    private V result;
+    private Exception exception;
+    
+    void innserSet(V v) {
+        while (true) {
+            int s = getState();
+            if(ranOrCancelled(s)) {
+                return;
+            }
+            if(compareAndSetState(s, RAN)) {
+                break;
+            }
+        }
+        result = v;
+        releaseShared(0);
+        done();
+    }
+    
+    V innerGet() throws InterruptedException, ExecutionException {
+        acquireSharedInterruptibly(0);
+        if(getState() == CANCELLED) {
+            throw new CancellationException();
+        }
+        if(exception != null) {
+            throw new ExecutionException(exception);
+        }
+        return result;
+    }
+}
+~~~
+- innserSet 메소드는 releasedShared 메소드를 호출하기 전에 result변수에 값을 보관하고, innerGet메소드는 acquireShared 메소드를 호출한 이후에 result 값을 읽어감
+- volatie 변수 규칙에 프로그램 순서 규칙을 함께 적용함으로써 innerSet 메소드에서 reulst 변수에 값을 쓰는 일이 innerGet 메소드에서 result 변수의 값을 읽는 작업보다 반드시 먼저 발생하도록 조절함
+- X라는 객체의 값을 공개 할 때 미리 발생 규칙을 따로 적용하기보다는, 다른 목적으로 만들어 사용하고 있는 미리 발생 순서 규칙을 X라는 객체의 가시성을 확보하는 데도 함께 사용하기 때문에 피기백이라고 부름
+- 특정 클래스가 자체적인 명세의 일부로써 메소드 사이에서 미리 발생 규칙을 사용하는 경우와 같은 부분에서는 피기백 방법이 딱 들어맞는 상황도 있음
 
+~~~
+JDK 라이브러리에 들어 있는 클래스 가운데 미리 발생 관계를 보장하고 있는 클래스
+	- 스레드 안전한 컬렉션 클래스에 값을 넣는 일은 해당 컬렉션 클래스에서 값을 뽑아내는 일보다 반드시 미리 발생
+	- CountDownLatch 클래스에서 카운터를 빼는 작업은 await에서 대기하던 메소드가 리턴되는 작업보다 반드시 미리 발생
+	- Semaphore에서 퍼밋을 해제하는 작업은 동일한 Semaphore에서 퍼밋을 확보하는 작업보다 반드시 미리 발생
+	- Future 인스턴스에서 실행하는 작업은 해당하는 Future인스턴스의 get 메소드가 리턴되기 전에 반드시 미리 발생
+	- Executor 인스턴스에 Runnable 이나 Callable 을 등록하는 작업은 해당 Runnable이나 Callable의 작업이 시작하기 전에 미리 발생
+	- CyclickBarrier나 Exchange 클래스에서 스레드가 도착하는 일은 동일한 배리어나 교환 포인트에서 다른 스레드가 풀려나는 일보다 미리 발생
+		- CyclickBarrier에서 배리어 동작을 사용하고 있었다면, 배리어에 도착하는 일이 배리어 동작보다 반드시 미리 발생하고, 배리어 동작은 또한 해당 배리어에서 다른 스레드가 풀려나기 전에 반드시 미리 발생
+~~~
 
+</br>
+
+## 16.2 안전한 공개
+- 객체가 안전하지 않게 공개되는 이유는 공유 객체를 공개하는 작업과 다른 스레드에서 공개된 객체를 사용하는 작업 간의 미리 발생 관계를 제대로 적용하지 못했기 때문
+
+### 16.2.1 안전하지 못한 공개
+- 새로운 객체를 생성하는 과정에서는 변수, 즉 새로운 객체의 필드에 값을 써 넣는 작업이 필요함
+- 객체에 대한 참조를 공개하는 과정에는 또 다른 변수, 즉 새로운 객체에 대한 참조에 값을 쓰느 ㄴ작업이 동반 됨
+- 재배치가 일어나면 다른 스레드에서 객체 참조는 올바른 최신 참조 값을 사용하지만, 객체 내부의 변수 전체 또는 일부에 대해서는 아직 쓰기 작업이 끝나지않은 상태의 예전 값을 사용할 가능성이 존재함
+	- 부분 구성된 객체라는 현상이 발생하는 셈
+~~~java
+@NotThreadSafe
+public class UnsfeLazyInitialization {
+	private static Resource resource;
+
+	public static Resource getInstance() {
+		if(resource == null)
+			resource = new Resource(); // 안전하지 않은 공개
+		return resource;
+	}
+}
+~~~
+- 늦은 초기화 방법을 올바르게 사용하지 못하면 안전하지 않은 공개 상태에 다다르게 됨
+- 불변 객체가 아닌 이상, 특정 객체를 공개하는 일이 그 객체를 사용하려는 작업보다 미리 발생하도록 구성되어 있지 않다면 다른 스레드에서 생성한 객체를 사용하는 작업은 안전하지 않음
+
+### 16.2.2 안전한 공개
+- 안전한 공개라는 용어는 객체를 공개하는 작업이 다른 스레드에서 해당 객체에 대한 참조를 가져다 사용하는 작업보다 미리 발생하도록 만들어져 있기 때문에 공개된 객체가 다른 스레드에게 올바른 상태로 보인다는 것을 뜻함
+- 스레드 A에서 객체 X를 BlockingQueue에 추가하고 다른 스레드에서 큐의 내용을 변경하지 않으면, 객체 X를 스레드 B에서 뽑아냈을 때, 스레드 B는 스레드 A가 큐에 넣었던 그 상태 그대로의 객체를 사용할 수 있음
+	- BlockingQueue 클래스는 내부적으로 put작업이 take 작업보다 항상 미리 발생하도록 충분히 동기화돼 있기 때문
+- 락으로 보호돼 있는 공유된 변수나 공유된 volatile 변수를 사용할 때는 읽기 작업과 쓰기 작업에 대한 미리 발생 관계가 항상 보장되어 있음
+- 미리 발생 관계가 보장된다는 사실은 안전한 공개에 의해 보장되는 가시성과 실행 순서보다 더 강력한 힘을 갖고 있음
+- 미리 발생 규칙은 개별적인 메모리 작업의 수준에서 일어나는 순서의 문제를 다룸
+	- 동기화 기법에 대한 어셈블리 언어
+- 반대로 안전한 공개 기법은 일반적인 코드를 작성할 때와 비슷한 수준에서 동작하는 동기화 기법임
+
+### 16.2.3 안전한 초기화를 위한 구문
+- 생성 작업에 부하가 걸리는 객체는 실제로 해당 객체를 필요로 하는 시점이 올 때까지 초기화하지 않고 기다리는 편이 나은 면도 있지만 늦은 초기화 기법을 잘못 사용하면 어떤 문제가 발생하는지도 잘 알고 있음
+~~~java
+@ThreadSafe
+public class SafeLazyInitialization {
+    private static Resource resource;
+    
+    public synchronized static Resource getInstance() {
+        if(resource == null) {
+            resource = new Resource();
+        }
+        return resource;
+    }
+}
+~~~
+- UnsafeLazyInitializaion 클래스의 문제점은 getInstance 메소드에 synchronized 키워드를 추가하는 것으로 해결할 수 있음
+- getInstance 메소드 내부에서 처리하는 작업이 상당히 간결한 편이기 때문에 여러 스레드에서 getInstance 메소드를 줄기차게 호출하지 않는 한 SafeLazyInitializaion 클래스에 대한 락에 대해서는 경쟁이 그다지 많이 발생하징 않을 것이고, 따라서 꽤 괜찮은 성능을 내 줄 것이라고 예상할 수 있음
+- static으로 선언된 변수에 초기화 문장을 함께 기술하는 특별한 방법을 사용하면 스레드 안전성을 추가적으로 보장받을 수 있음
+- static으로 선언된 초기화 문장은 JVM에서 해당 클래스를 읽어들이고 실제 해당 클래스에서 사용하기 전에 실행됨
+	- 초기화 과정에서 JVM이 락을 확보하며 각 스레드에서 해당 클래스가 읽혀져 있는지를 확인하기 위해 락을 다시 확보하게 되어 있음
+- static 구문에서 초기화하는 객체는 생성될때나 참조될 때 언제든지 따로 동기화를 맞출 필요가 없음
+- 초기화한 객체의 내용이 그대로인 상태를 가정할 때만 성립되며, 반대로 객체의 내용을 변경할 수만 있다면 읽기 스레드와 쓰기 스레드가 연달아 객체의 내용을 변경할 때마다 동기화를 맞춰야 변경된 내용을 다른 스레드에서 올바르게 볼 수 있고 데이터에 오류가 발생하는 일도 막을 수 있음
+
+~~~java
+@ThreadSafe
+public class EagerInitialization {
+    private static Resource resource;
+    
+    public static Resource getResource() {return resource;}
+}
+~~~
+- 성질 급한 초기화 방법을 사용하면 SafeLazyInitialization 클래스에서 getInstance를 호출할 때마다 매번 처리해야 했던 synchronized구문을 제거할 수 있음
+- JVM이 사용하는 lazy class loading 기법과 함께 사용할 수 있으며, 자주 사용하는 코드에 대해서 동기화를 맞춰야 할 필요를 줄일 수 있음
+~~~java
+@ThreadSafe
+public class ResourceFactory {
+    private static class ResourceHolder {
+        public static Resource resource = new Resource();
+    }
+    
+    public static Resource getResource() {
+        return ResourceHolder.resource;
+    }
+}
+~~~
+- Resource 클래스를 초기화할 목적으로 늦은 초기화 홀더 클래스 구문을 적용해 작성한 클래스
+- JVM은 Resourceholder 클래스를 실제로 사용하기 전까지는 해당 클래스를 초기화하지 않으며 Resource 클래스 역시 static 초기화 구문에서 초기화하기 대문에 추가적인 동기화 기법을 적용할 필요가 없음
+- 어느 스레드건 간에 처음 getResource 메소드를 호출하면 JVM에서 ResourceHolder 클래스를 읽어들여 초기화하고, ResourceHolder 클래스를 초기화하는 도중에 Resource 클래스 역시 초기화하게 되어있음
+
+### 16.2.4 더블 체크 락
+~~~java
+@NotThreadSafe
+publi cclass DoubleCheckedLocking {
+	private static Resource resource;
+
+	public static Resource getInstance() {
+		if(resource == null) {
+			synchronized(DoubleCheckedLocking.class) {
+				if(resource == null)
+					resource = new Resource();
+			}
+		}
+		return resource
+	}
+}
+~~~
+- 악명 높은 피해야할 패턴은 더블 체크 락 패턴
+- DCL은 자주 사용되는 클래스에 대해 늦은 초기화 작업을 하면서도 동기화와 관련된 자원의 손실을 막을 수 있는 방법으로 알려져 왔음
+- DCL은 먼저 동기화 구문이 없는 상태로 초기화 작업이 필요한지를 확인하고, resource 변수의 값이 null이 아니라면 resource 변수에 참조된 객체를 사용함
+- 이미 만들어진 Resource 인스턴스에 대한 참조를 가져오는 부분은 동기화 되어 있지 않음
+- DCL이 갖고 있는 더 큰 문제는 동기화 돼 있지 않은 상태에서 발생할 수 있는 심각한 문제가 스테일 값을 사용할 가능성이 있는 정도에 불과하다고 추정하는 것
+- 현재 객체에 대한 참조를 제대로 본다 하더라도 객체의 상태를 볼 때 스테일 값을 보게되는 경우, 즉 참조괸 객체의 내부 상태가 올바르지 않은 상태인 경우가 생길 수 있음
+- 늦은 초기화 홀더 클래스 구문은 DCL보다 훨씬 이해하기도 쉬우면서 동일한 기능을 제공함
+
+</br>
+
+## 초기화 안정성
+- 초기화 안전성을 보장한다는 의미는 올바르게 생성된 불변 객체를 어떤 방법으로건, 심지어는 데이터 경쟁이 발생한다는 방법으로 공개핟라도 여러 스레드에서 별다른 동기화 구문 없이 안전하게 사용할 수 있다는 의미임
+- 초기화 안전성을 확보하지 못한 상태에서는 변경 불가능하다고 알려진 String과 같은 클래스조차 공개하거나 다른 스레드가 사용하는 과정에서 값이 바뀌는 것처럼 보일 수도 있음
+- 초기화 안전성이 확보돼 있다면 완전하게 구성된 객체를 대상으로 해당 객체가 어떻게 공개됐던 간에 생성자를 지정하는 모든 final 변수의 값을 어떤 스레드건 간에 올바르게 읽어갈 수 있다는 점을 보장함
+- 완전하게 구성된 객체 내부의 fianl로 선언된 객체를 거쳐 사용할 수 있는 모든 변수(예를 들어 fianl로 선언된 배열의 항목 또는 fianl로 선언된 HashMap 내부에 들어 있는 값 등) 역시 다른 스레드에서 안전하게 볼 수 있다는 점도 보장됨
+- final로 선언된 변수를 갖고 있는 클래스는 초기화 안전성 조건 때문에 해당 인스턴스에 대한 참조를 최초로 생성하는 과정에서 재배치 작업이 일어나지 않음
+- 생성자에서 fianl변수에 값을 쓰는 작업와 final 변수를 통해 접근 가능한 모든 변수에 값을 쓰는 작업은 생성 메소드가 종료되는 시점에 '고정'됨
+~~~java
+@ThreadSafe
+public class SafeStates {
+    private final Map<String, String> states;
+    
+    public SafeStates() {
+        states = new HashMap<String, String>();
+        states.put("alaska", "AK");
+        states.put("alabama", "AL");
+    }
+    
+    public String getAbberviation(String s) {
+        return states.get(s);
+    }
+}
+~~~
+- 안전하게 초기화한다는 말의 의미는 SafeState 클래스와 같이 별다른 동기화도 하지 않고 스레드 안전하지 않은 HashSet을 사용한다 해도, 이를 대상으로 안전하지 않은 늦은 초기화 작업을 진행하거나 동기화 구문 없이 SafeStates에 대한 참조를 public static으로 선언된 변수에 선언하는 것으로도 안전하게 공개할 수 있다는 뜻임
+- SafeStates 클래스에서 몇 가지 조그마한 변경 사항이 가해지면 앞서 소개했던 스레드 안전성을 잃게 됨
+- SafeStates 클래스에서 final로 선언되지 않은 다른 변수가 더 있었다면, final이 아닌 변수에 대해서는 다른 스레드에서 올바르지 않은 값을 보게 될 수도 있음
+- 생성자가 완료되기 전에 해당 객체를 외부에서 사용할 수 있도록 유출시키는 작업 역시 초기화 안전성을 무너뜨리는 일임
+- 초기화 안전성은 생성자가 완료되는 시점에 final로 선언된 변수와 해당 변수를 거쳐 접근할 수 있는 값에 대해서만 가시성을 보장함
+- final로 선언되지 않은 변수나 생성자가 종료된 이후에 변경되는 값에 대해서는 별도의 동기화 구문을 적용해야 가시성을 확보할 수 있음
+
+</br>
+
+## 요약
+- 자바 메모리 모델은 특정 스레드에서 메모리를 대상으로 취하는 작업이 다른 스레드에게 어떻게 보이는지의 여부를 명시하고 있음
+- 가시성을 보장해주는 연산은 미리 발생이라는 규칙을 통해 부분적으로 실행 순서가 정렬된 상태를 유지하며, 미리 발생 규칙은 개별적인 메모리 작업이나 동기화 작업의 수준에서 정의하는 규칙임
+- 충분히 동기화되지 않은 상태에서는 공유된 데이터를 여러 스레드에서 사용할때는 굉장히 이상한 현상이 발생할 수 있음
